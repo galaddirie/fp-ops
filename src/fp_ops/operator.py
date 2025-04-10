@@ -15,6 +15,10 @@ from typing import (
     Type,
     Collection,
     Awaitable,
+    cast,
+    overload,
+    Protocol,
+    runtime_checkable,
 )
 from expression import Result
 
@@ -26,6 +30,14 @@ S = TypeVar("S")
 R = TypeVar("R")
 E = TypeVar("E", bound=Exception)
 C = TypeVar("C", bound=BaseContext)
+OptC = Optional[Type[BaseContext]]  # Type alias for optional context type
+
+
+@runtime_checkable
+class ContextAwareCallable(Protocol):
+    """Protocol for callables that have context awareness attributes."""
+    requires_context: bool
+    context_type: Optional[Type[BaseContext]]
 
 
 class Operation(Generic[T, S, C]):
@@ -59,6 +71,7 @@ class Operation(Generic[T, S, C]):
         self.bound_args = bound_args
         self.bound_kwargs = bound_kwargs or {}
         self.is_bound = bound_args is not None or bound_kwargs is not None
+        # Use getattr safely for context attributes
         self.requires_context = getattr(func, "requires_context", False)
         self.context_type = context_type or getattr(func, "context_type", None)
         self.__name__ = getattr(func, "__name__", "unknown")
@@ -76,7 +89,7 @@ class Operation(Generic[T, S, C]):
             A Result containing the output or an error.
         """
         if self.is_bound:
-            actual_args = args or self.bound_args
+            actual_args = args or self.bound_args or ()  # Ensure it's always a tuple
             actual_kwargs = dict(self.bound_kwargs or {})
             if kwargs:
                 actual_kwargs.update(kwargs)
@@ -146,13 +159,14 @@ class Operation(Generic[T, S, C]):
             result = await self.func(*actual_args, **actual_kwargs)
             
             if isinstance(result, Result):
-                return result
-            return Result.Ok(result)
+                return cast(Result[S, Exception], result)  # Type cast to fix return type
+            return cast(Result[S, Exception], Result.Ok(result))  # Type cast to fix return type
         except Exception as e:
             return Result.Error(e)
         
     @classmethod
-    def with_context(cls, context_factory=None, context_type=None):
+    def with_context(cls, context_factory: Optional[Callable[..., Any]] = None, 
+                    context_type: Optional[Type[BaseContext]] = None) -> "Operation[Any, Any, C]":
         """
         Create an operation that initializes a context.
 
@@ -172,12 +186,16 @@ class Operation(Generic[T, S, C]):
             else:
                 context_factory = lambda: BaseContext()
 
-        async def init_context(*args, **kwargs):
+        async def init_context(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
             try:
                 if inspect.iscoroutinefunction(context_factory):
                     context = await context_factory(*args, **kwargs)
                 else:
-                    context = await asyncio.to_thread(context_factory, *args, **kwargs)
+                    # Ensure context_factory is callable before passing to to_thread
+                    if callable(context_factory):
+                        context = await asyncio.to_thread(context_factory, *args, **kwargs)
+                    else:
+                        return Result.Error(Exception("context_factory must be callable"))
 
                 # Validate context against the context type if specified
                 if context_type is not None and not isinstance(context, context_type):
@@ -192,13 +210,13 @@ class Operation(Generic[T, S, C]):
                             Exception(f"Invalid context from factory: {e}")
                         )
 
-                return context
+                return Result.Ok(context)  # Explicitly wrap in Result.Ok
             except Exception as e:
                 return Result.Error(e)
 
         # Mark the function as requiring context
-        init_context.requires_context = False
-        init_context.context_type = context_type
+        init_context.requires_context = False  # type: ignore
+        init_context.context_type = context_type  # type: ignore
 
         return cls(init_context, context_type=context_type)
 
@@ -223,7 +241,7 @@ class Operation(Generic[T, S, C]):
 
         return Operation(self.func, args, bound_kwargs, context_type=self.context_type)
 
-    def __await__(self):
+    def __await__(self) -> Any:
         """
         Make Operation awaitable in async functions.
 
@@ -231,7 +249,7 @@ class Operation(Generic[T, S, C]):
             An iterator that can be used with the await syntax.
         """
 
-        async def awaitable():
+        async def awaitable() -> Any:
             if self.is_bound:
                 return await self.execute()
             else:
@@ -272,9 +290,9 @@ class Operation(Generic[T, S, C]):
             self_result = await self.execute(*args, **execution_kwargs)
 
             if self_result.is_error():
-                return self_result
+                return cast(Result[Any, Exception], self_result)  # Type cast to fix return type
 
-            value = self_result.default_value(None)
+            value = self_result.default_value(cast(S, None))  # Type cast to fix argument type
             
             # If the value is a BaseContext, it becomes the new context
             # and is NOT passed as a positional argument to the next operation
@@ -295,7 +313,7 @@ class Operation(Generic[T, S, C]):
                     try:
                         result = await other.func(*new_args, **new_kwargs)
                         if isinstance(result, Result):
-                            return result
+                            return cast(Result[Any, Exception], result)  # Type cast to fix return type
                         return Result.Ok(result)
                     except Exception as e:
                         return Result.Error(e)
@@ -325,7 +343,7 @@ class Operation(Generic[T, S, C]):
                     try:
                         result = await other.func(*new_args, **new_kwargs)
                         if isinstance(result, Result):
-                            return result
+                            return cast(Result[Any, Exception], result)  # Type cast to fix return type
                         return Result.Ok(result)
                     except Exception as e:
                         return Result.Error(e)
@@ -378,13 +396,13 @@ class Operation(Generic[T, S, C]):
             )
 
             if result1.is_error():
-                return result1
+                return cast(Result[Tuple[Any, Any], Exception], result1)  # Type cast to fix return type
             if result2.is_error():
-                return result2
+                return cast(Result[Tuple[Any, Any], Exception], result2)  # Type cast to fix return type
 
-            value1 = result1.default_value(None)
+            value1 = result1.default_value(cast(S, None))  # Type cast to fix argument type
             value2 = result2.default_value(None)
-            return Result.Ok((value1, value2))
+            return cast(Result[Tuple[Any, Any], Exception], Result.Ok((value1, value2)))  # Type cast to fix return type
 
         # Use the most specific context type
         context_type = self.context_type
@@ -418,7 +436,7 @@ class Operation(Generic[T, S, C]):
             result1 = await self.execute(*args, **self_kwargs)
 
             if result1.is_ok():
-                return result1
+                return cast(Result[Any, Exception], result1)  # Type cast to fix return type
 
             return await other.execute(*args, **other_kwargs)
 
@@ -447,13 +465,13 @@ class Operation(Generic[T, S, C]):
             result = await self.execute(*args, **kwargs)
 
             if result.is_error():
-                return result
+                return cast(Result[Any, Exception], result)  # Type cast to fix return type
 
-            value = result.default_value(None)
+            value = result.default_value(cast(S, None))  # Type cast to fix argument type
 
             # If the value is a context object, don't transform it
             if isinstance(value, BaseContext):
-                return Result.Ok(value)
+                return cast(Result[Any, Exception], Result.Ok(value))  # Type cast to fix return type
 
             try:
                 if is_async_transform:
@@ -498,9 +516,9 @@ class Operation(Generic[T, S, C]):
             result = await self.execute(*args, **kwargs)
 
             if result.is_error():
-                return result
+                return cast(Result[Any, Exception], result)  # Type cast to fix return type
 
-            value = result.default_value(None)
+            value = result.default_value(cast(S, None))  # Type cast to fix argument type
 
             # If the value is a context object, use it as the new context
             if isinstance(value, BaseContext):
@@ -513,7 +531,7 @@ class Operation(Generic[T, S, C]):
                     bind_result = await asyncio.to_thread(binder_func, value)
 
                 if isinstance(bind_result, Result):
-                    return bind_result
+                    return cast(Result[Any, Exception], bind_result)  # Type cast to fix return type
                 elif isinstance(bind_result, Operation):
                     # If bind_result is an Operation, execute it with context
                     execution_kwargs = {}
@@ -548,22 +566,23 @@ class Operation(Generic[T, S, C]):
             result = await self.execute(*args, **kwargs)
 
             if result.is_error():
-                return result
+                return cast(Result[Any, Exception], result)  # Type cast to fix return type
 
-            value = result.default_value(None)
+            value = result.default_value(cast(S, None))  # Type cast to fix argument type
 
             # If the value is a context, skip filtering
             if isinstance(value, BaseContext):
-                return result
+                return cast(Result[Any, Exception], result)  # Type cast to fix return type
 
             try:
                 if is_async_predicate:
-                    predicate_result = await predicate(value)
+                    # Use safe_await for potentially non-awaitable values
+                    predicate_result = await safe_await(predicate(value))
                 else:
                     predicate_result = await asyncio.to_thread(predicate, value)
 
                 if predicate_result:
-                    return result
+                    return cast(Result[Any, Exception], result)  # Type cast to fix return type
                 else:
                     return Result.Error(ValueError(error_msg))
             except Exception as e:
@@ -614,7 +633,7 @@ class Operation(Generic[T, S, C]):
                 except Exception as e:
                     return Result.Error(e)
 
-            return result
+            return cast(Result[Any, Exception], result)  # Type cast to fix return type
 
         return Operation(handled, context_type=self.context_type)
 
@@ -650,7 +669,7 @@ class Operation(Generic[T, S, C]):
                         pass
 
                 return Result.Ok(default)
-            return result
+            return cast(Result[Any, Exception], result)  # Type cast to fix return type
 
         return Operation(with_default, context_type=self.context_type)
 
@@ -669,7 +688,7 @@ class Operation(Generic[T, S, C]):
         async def retried(*args: Any, **kwargs: Any) -> Result[S, Exception]:
             # Preserve context when retrying
             context = kwargs.get("context")
-            last_error = None
+            last_error: Optional[Exception] = None
 
             for attempt in range(attempts):
                 # Create a new kwargs for each attempt
@@ -679,7 +698,7 @@ class Operation(Generic[T, S, C]):
                     result = await self.execute(*args, **attempt_kwargs)
 
                     if result.is_ok():
-                        return result
+                        return cast(Result[S, Exception], result)  # Type cast to fix return type
 
                     last_error = result.error
                 except Exception as e:
@@ -709,27 +728,27 @@ class Operation(Generic[T, S, C]):
             result = await self.execute(*args, **kwargs)
 
             if result.is_ok():
-                value = result.default_value(None)
+                value = result.default_value(cast(S, None))  # Type cast to fix argument type
 
                 # Skip side effect if the value is a context
                 if isinstance(value, BaseContext):
-                    return result
+                    return cast(Result[S, Exception], result)  # Type cast to fix return type
 
                 try:
                     if is_async_side_effect:
-                        await side_effect(value)
+                        await safe_await(side_effect(value))  # Use safe_await for potentially non-awaitable values
                     else:
                         await asyncio.to_thread(side_effect, value)
                 except Exception:
                     # Ignore exceptions in the side effect
                     pass
 
-            return result
+            return cast(Result[S, Exception], result)  # Type cast to fix return type
 
         return Operation(tapped, context_type=self.context_type)
 
     @classmethod
-    async def sequence(
+    def sequence(
         cls, operations: Collection["Operation"]
     ) -> "Operation[Any, List[Any], Optional[Type[BaseContext]]]":
         """
@@ -754,7 +773,7 @@ class Operation(Generic[T, S, C]):
                 op_result = await op.execute(*args, **op_kwargs)
 
                 if op_result.is_error():
-                    return op_result
+                    return cast(Result[List[Any], Exception], op_result)  # Type cast to fix return type
 
                 value = op_result.default_value(None)
 
@@ -781,7 +800,7 @@ class Operation(Generic[T, S, C]):
         return cls(sequenced, context_type=context_type)
 
     @classmethod
-    async def combine(
+    def combine(
         cls, **named_ops: "Operation"
     ) -> "Operation[Any, Dict[str, Any], Optional[Type[BaseContext]]]":
         """
@@ -809,7 +828,7 @@ class Operation(Generic[T, S, C]):
                 op_result = await op.execute(*args, **op_kwargs)
 
                 if op_result.is_error():
-                    return op_result
+                    return cast(Result[Dict[str, Any], Exception], op_result)  # Type cast to fix return type
 
                 value = op_result.default_value(None)
 
@@ -838,7 +857,7 @@ class Operation(Generic[T, S, C]):
         return cls(combined, context_type=context_type)
 
     @staticmethod
-    def unit(value: T) -> "Operation[Any, T]":
+    def unit(value: T) -> "Operation[Any, T, None]":
         """
         Return a value in the Operation monad context (unit/return).
 
@@ -849,10 +868,10 @@ class Operation(Generic[T, S, C]):
             An Operation that returns the value.
         """
 
-        async def constant(*args: Any, **kwargs: Any) -> Result[T, Exception]:
+        async def constant_func(*args: Any, **kwargs: Any) -> Result[T, Exception]:
             return Result.Ok(value)
 
-        return Operation(constant)
+        return Operation(constant_func)
 
     def apply_cont(self, cont: Callable[[S], Awaitable[R]]) -> Awaitable[R]:
         """
@@ -867,7 +886,7 @@ class Operation(Generic[T, S, C]):
             The result of applying the continuation.
         """
 
-        async def run():
+        async def run() -> R:
             # If the operation isn't bound, provide a default value
             # In this case, the fetch_item operation requires an item_id
             if not self.is_bound:
@@ -879,7 +898,7 @@ class Operation(Generic[T, S, C]):
             if result.is_error():
                 raise result.error
 
-            return await cont(result.default_value(None))
+            return await cont(result.default_value(cast(S, None)))  # Type cast to fix argument type
 
         return run()
 
@@ -978,9 +997,34 @@ class Operation(Generic[T, S, C]):
         return obj
 
 
+async def safe_await(value: Any) -> Any:
+    """Safely await a value, handling both awaitable and non-awaitable values."""
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
-def operation(func=None, *, context=False, context_type=None):
+@overload
+def operation(
+    func: Callable[..., Any],
+) -> Operation[Any, Any, Any]: ...
+
+
+@overload
+def operation(
+    func: None = None,
+    *,
+    context: bool = False,
+    context_type: Optional[Type[BaseContext]] = None,
+) -> Callable[[Callable], Operation[Any, Any, Any]]: ...
+
+
+def operation(
+    func: Optional[Callable[..., Any]] = None,
+    *,
+    context: bool = False,
+    context_type: Optional[Type[BaseContext]] = None,
+) -> Union[Operation[Any, Any, Any], Callable[[Callable], Operation[Any, Any, Any]]]:
     """
     Decorator to convert a function (sync or async) into an Operation.
 
@@ -1003,7 +1047,7 @@ def operation(func=None, *, context=False, context_type=None):
 
     is_async = inspect.iscoroutinefunction(func)
 
-    async def async_wrapped(*args, **kwargs):
+    async def async_wrapped(*args: Any, **kwargs: Any) -> Any:
         try:
             if is_async:
                 result = await func(*args, **kwargs)
@@ -1017,21 +1061,22 @@ def operation(func=None, *, context=False, context_type=None):
             return Result.Error(e)
 
     # Mark the function with context requirements
-    async_wrapped.requires_context = context
-    async_wrapped.context_type = context_type
+    async_wrapped.requires_context = context  # type: ignore
+    async_wrapped.context_type = context_type  # type: ignore
 
     return Operation(async_wrapped, context_type=context_type)
 
+
 @operation
-def identity(x, **kwargs):
+def identity(x: Any, **kwargs: Any) -> Any:
     """
     Return the input value unchanged.
     """
     return x
 
-def constant(value, **kwargs):
+
+def constant(value: Any, **kwargs: Any) -> Operation[Any, Any, None]:
     """
     Return a constant value.
     """
     return Operation.unit(value)
-
