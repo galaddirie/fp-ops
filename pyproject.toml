@@ -1,0 +1,54 @@
+[project]
+name = "fp-operator"
+version = "0.1.0"
+description = "an ergonomic wrapper around the expression library"
+authors = [
+    {name = "Galad Dirie", email = "hello@galad.ca"}
+]
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10,<4.0"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "expression (>=5.6.0,<6.0.0)",
+]
+
+[project.urls]
+"GitHub" = "https://github.com/galaddirie/fp-operator"
+"Bug Tracker" = "https://github.com/galaddirie/fp-operator/issues"
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.4.0"
+pytest-asyncio = ">=0.21.1"
+pytest-cov = ">=4.1.0"
+mypy = "^1.15.0"
+
+[tool.poetry]
+packages = [
+    {include = "fp_ops", from = "src"}
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+strict_optional = true
