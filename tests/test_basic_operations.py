@@ -7,10 +7,12 @@ from expression import Result
 
 # Import the Operation class and utilities from your module
 from fp_ops.operator import (
-    operation, constant, fail, attempt, 
+    constant,
+    identity,
     Operation
 )
-
+from fp_ops.flow import branch, attempt, fail
+from fp_ops.decorators import operation
 from fp_ops.placeholder import _
 
 # -----------------------------------------------

@@ -5,18 +5,16 @@ import random
 from typing import Dict, List, Any, Optional, Callable, TypeVar, Awaitable
 from expression import Result
 
-# Import the Operation class and utilities from your module
 from fp_ops.operator import (
-    operation, constant, fail, attempt,
-    Operation
+     constant, 
+     identity,
+     Operation
 )
-
+from fp_ops.flow import branch, attempt, fail
+from fp_ops.decorators import operation
 T = TypeVar("T")
 S = TypeVar("S")
 
-# -----------------------------------------------
-# FIXTURES
-# -----------------------------------------------
 
 @pytest.fixture
 def event_loop():

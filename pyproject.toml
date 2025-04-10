@@ -20,6 +20,7 @@ classifiers = [
 ]
 dependencies = [
     "expression (>=5.6.0,<6.0.0)",
+    "pydantic (>=2.11.3,<3.0.0)",
 ]
 
 [project.urls]
