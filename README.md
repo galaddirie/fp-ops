@@ -7,13 +7,12 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Type check: mypy](https://img.shields.io/badge/type%20check-mypy-blue)](https://github.com/python/mypy)
 
-FP-Ops is a functional programming library for Python that provides composable asynchronous operations with first-class composition. It implements the continuation monad pattern to make composition work smoothly with async/await syntax.
+FP-Ops is a functional programming library for Python that lets you convert you functions into composable operations.
 
 ## Features
 
-- **Composable Operations**: Build complex pipelines using operators like `>>`, `&`, and `|`
+- **Composition as a First-class Citizen**: Build complex pipelines using simple operators like `>>`, `&`, and `|`
 - **Context Awareness**: Pass context through operation chains with automatic validation
-- **Error Handling**: Built-in `Result` type for robust error management
 - **Async-First**: Designed for asynchronous operations from the ground up
 - **Type Safety**: Comprehensive type hints for better IDE support and code safety
 - **Functional Patterns**: Implements common functional programming patterns like map, filter, and reduce
@@ -29,8 +28,7 @@ pip install fp-ops
 Here's a simple example to get you started:
 
 ```python
-from fp_ops.operator import operation, Operation
-from fp_ops.context import BaseContext
+from fp_ops.operator import operation
 import asyncio
 
 # Define some operations
@@ -46,15 +44,7 @@ async def format_user(user: dict) -> str:
 # Compose operations
 get_and_format = get_user >> format_user
 
-# Run the composed operation
-async def main():
-    result = await get_and_format(1)
-    if result.is_ok():
-        print(result.value)  # User John Doe is 30 years old
-    else:
-        print(f"Error: {result.error}")
-
-asyncio.run(main())
+get_and_format(1)
 ```
 
 ## Key Concepts
@@ -103,7 +93,6 @@ class UserContext(BaseContext):
 
 @operation(context=True, context_type=UserContext)
 async def get_user_data(context: UserContext) -> dict:
-    # Use context.auth_token to make authenticated API request
     return {"id": context.user_id, "name": "Jane Doe"}
 
 # Initialize context
@@ -157,12 +146,12 @@ combined = await parallel(op1, op2, op3)
 result = await fallback(op1, op2, op3)
 ```
 
-### Higher-Order Operations
+### Higher-Order Flow Operations
 
 FP-Ops provides utilities for creating higher-order operations:
 
 ```python
-from fp_ops.higher_order import branch, attempt, retry, wait, loop_until
+from fp_ops.flow import branch, attempt, retry, wait, loop_until
 
 # Conditional branching
 conditional = branch(
