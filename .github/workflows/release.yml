@@ -84,7 +84,7 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
           commit_message: "chore: prepare release v${{ env.release_version }}"
-          file_pattern: 'pyproject.toml src/silk/__init__.py README.md CHANGELOG.md'
+          file_pattern: 'pyproject.toml src/fp_ops/__init__.py README.md CHANGELOG.md'
           
       - name: Create Release
         uses: softprops/action-gh-release@v1
