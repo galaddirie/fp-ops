@@ -551,7 +551,7 @@ class TestSequenceAndCombine:
             return f"Step 3: {data}"
         
         # Create a sequence
-        sequence_op = await Operation.sequence([step1, step2, step3])
+        sequence_op = Operation.sequence([step1, step2, step3])
         
         # Execute with the same input for all operations
         result = await sequence_op("input")
@@ -580,7 +580,7 @@ class TestSequenceAndCombine:
             return f"Email: {data}@example.com"
         
         # Create a combined operation
-        combined_op = await Operation.combine(
+        combined_op = Operation.combine(
             name=get_name,
             id=get_id,
             email=get_email
@@ -657,6 +657,7 @@ class TestSyncFunctions:
         assert error_result.is_error()
         assert isinstance(error_result.error, ZeroDivisionError)
 
+
 class TestOverloading:
     
     @pytest.mark.asyncio
@@ -730,8 +731,6 @@ class TestOverloading:
         result = await pipeline()
         assert result.is_ok()
         assert result.default_value(None) == 6.0  # 30/5 = 6.0
-
-
 
 
 class TestPlaceholders:

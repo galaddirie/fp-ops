@@ -796,9 +796,12 @@ class Operation(Generic[T, S, C]):
             A new Operation that applies the side effect.
         """
         is_async_side_effect = inspect.iscoroutinefunction(side_effect)
+        # Check if the side effect requires context
+        requires_context = getattr(side_effect, "requires_context", False)
 
         async def tapped(*args: Any, **kwargs: Any) -> Result[S, Exception]:
             # Preserve context in side effects
+            context = kwargs.get("context")
             result = await self.execute(*args, **kwargs)
 
             if result.is_ok():
@@ -813,12 +816,20 @@ class Operation(Generic[T, S, C]):
                     )  # Type cast to fix return type
 
                 try:
-                    if is_async_side_effect:
-                        result_value = side_effect(value)
-
-                        await safe_await(result_value)
+                    if requires_context:
+                        # Pass both value and context to the side effect
+                        if is_async_side_effect:
+                            result_value = side_effect(value, context=context) # type: ignore
+                            await safe_await(result_value)
+                        else:
+                            await asyncio.to_thread(side_effect, value, context=context) # type: ignore
                     else:
-                        await asyncio.to_thread(side_effect, value)
+                        # Original behavior for side effects that don't require context
+                        if is_async_side_effect:
+                            result_value = side_effect(value)
+                            await safe_await(result_value)
+                        else:
+                            await asyncio.to_thread(side_effect, value)
                 except Exception:
                     # Ignore exceptions in the side effect
                     pass

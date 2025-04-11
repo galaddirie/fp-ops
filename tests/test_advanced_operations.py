@@ -29,7 +29,7 @@ def fetch_item():
     async def _fetch_item(item_id: int) -> Dict[str, Any]:
         """Fetch an item by ID."""
         await asyncio.sleep(0.1)
-        return {"id": item_id, "name": f"Item {item_id}", "category_id": item_id % 3 + 1}
+        return {"id": item_id, "name": f"Item {item_id}", "category_id": 2}
     
     return _fetch_item
 
@@ -126,7 +126,10 @@ class TestContinuationMonad:
         assert "category" in data
         assert "related_items" in data
         assert data["item"]["id"] == 1
-        assert data["category"]["id"] == data["item"]["category_id"]
+        # The item with id=1 has category_id=2 according to the fixture
+        assert data["item"]["category_id"] == 2, f"Item 1 should have category_id=2 {data}"
+        # The category should have the same id as the item's category_id
+        assert data["category"]["id"] == data["item"]["category_id"], f"Category should have id=2 {data}"
         assert len(data["related_items"]) == 2
     
     # @pytest.mark.asyncio
