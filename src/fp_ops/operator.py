@@ -29,13 +29,14 @@ T = TypeVar("T")
 S = TypeVar("S")
 R = TypeVar("R")
 E = TypeVar("E", bound=Exception)
-C = TypeVar("C", bound=BaseContext)
+C = TypeVar("C", bound=Optional[BaseContext])
 OptC = Optional[Type[BaseContext]]  # Type alias for optional context type
 
 
 @runtime_checkable
 class ContextAwareCallable(Protocol):
     """Protocol for callables that have context awareness attributes."""
+
     requires_context: bool
     context_type: Optional[Type[BaseContext]]
 
@@ -103,10 +104,16 @@ class Operation(Generic[T, S, C]):
         # If this operation requires context
         if self.requires_context:
             if context is None:
-                return Result.Error(Exception(f"Operation {self.__name__} requires a context, but none was provided"))
-            
+                return Result.Error(
+                    Exception(
+                        f"Operation {self.__name__} requires a context, but none was provided"
+                    )
+                )
+
             # If a specific context type is required, validate it
-            if self.context_type is not None and not isinstance(context, self.context_type):
+            if self.context_type is not None and not isinstance(
+                context, self.context_type
+            ):
                 # Stricter validation for context types
                 try:
                     # Only dictionaries should be converted automatically
@@ -118,55 +125,73 @@ class Operation(Generic[T, S, C]):
                         # Check for meaningful conversion - do the fields align?
                         required_fields = set(self.context_type.__annotations__.keys())
                         provided_fields = set(context.__annotations__.keys())
-                        
+
                         # If the context doesn't have the required fields, fail
                         if not required_fields.issubset(provided_fields):
                             missing = required_fields - provided_fields
-                            return Result.Error(Exception(
-                                f"Invalid context type for operation {self.__name__}: "
-                                f"Expected {self.context_type.__name__}, got {type(context).__name__}. "
-                                f"Missing fields: {missing}"
-                            ))
-                        
+                            return Result.Error(
+                                Exception(
+                                    f"Invalid context type for operation {self.__name__}: "
+                                    f"Expected {self.context_type.__name__}, got {type(context).__name__}. "
+                                    f"Missing fields: {missing}"
+                                )
+                            )
+
                         # Attempt strict conversion
                         try:
                             # Only convert if the context has all the required fields
                             context_data = context.model_dump()
                             # Filter to only include fields expected by the target type
-                            filtered_data = {k: v for k, v in context_data.items() 
-                                            if k in required_fields or k == 'metadata'}
+                            filtered_data = {
+                                k: v
+                                for k, v in context_data.items()
+                                if k in required_fields or k == "metadata"
+                            }
                             context = self.context_type(**filtered_data)
                             actual_kwargs["context"] = context
                         except Exception as e:
-                            return Result.Error(Exception(
-                                f"Invalid context for operation {self.__name__}: "
-                                f"Could not convert {type(context).__name__} to {self.context_type.__name__}: {e}"
-                            ))
+                            return Result.Error(
+                                Exception(
+                                    f"Invalid context for operation {self.__name__}: "
+                                    f"Could not convert {type(context).__name__} to {self.context_type.__name__}: {e}"
+                                )
+                            )
                     else:
                         # Not a dict or BaseContext - explicit failure
-                        return Result.Error(Exception(
-                            f"Invalid context type for operation {self.__name__}: "
-                            f"Expected {self.context_type.__name__}, got {type(context).__name__}"
-                        ))
+                        return Result.Error(
+                            Exception(
+                                f"Invalid context type for operation {self.__name__}: "
+                                f"Expected {self.context_type.__name__}, got {type(context).__name__}"
+                            )
+                        )
                 except Exception as e:
-                    return Result.Error(Exception(f"Invalid context for operation {self.__name__}: {e}"))
-        
+                    return Result.Error(
+                        Exception(f"Invalid context for operation {self.__name__}: {e}")
+                    )
+
         # Always include context in execution kwargs
         elif context is not None:
             actual_kwargs["context"] = context
 
         try:
             result = await self.func(*actual_args, **actual_kwargs)
-            
+
             if isinstance(result, Result):
-                return cast(Result[S, Exception], result)  # Type cast to fix return type
-            return cast(Result[S, Exception], Result.Ok(result))  # Type cast to fix return type
+                return cast(
+                    Result[S, Exception], result
+                )  # Type cast to fix return type
+            return cast(
+                Result[S, Exception], Result.Ok(result)
+            )  # Type cast to fix return type
         except Exception as e:
             return Result.Error(e)
-        
+
     @classmethod
-    def with_context(cls, context_factory: Optional[Callable[..., Any]] = None, 
-                    context_type: Optional[Type[BaseContext]] = None) -> "Operation[Any, Any, C]":
+    def with_context(
+        cls,
+        context_factory: Optional[Callable[..., Any]] = None,
+        context_type: Optional[Type[BaseContext]] = None,
+    ) -> "Operation[Any, Any, Any]":
         """
         Create an operation that initializes a context.
 
@@ -193,9 +218,13 @@ class Operation(Generic[T, S, C]):
                 else:
                     # Ensure context_factory is callable before passing to to_thread
                     if callable(context_factory):
-                        context = await asyncio.to_thread(context_factory, *args, **kwargs)
+                        context = await asyncio.to_thread(
+                            context_factory, *args, **kwargs
+                        )
                     else:
-                        return Result.Error(Exception("context_factory must be callable"))
+                        return Result.Error(
+                            Exception("context_factory must be callable")
+                        )
 
                 # Validate context against the context type if specified
                 if context_type is not None and not isinstance(context, context_type):
@@ -218,7 +247,7 @@ class Operation(Generic[T, S, C]):
         init_context.requires_context = False  # type: ignore
         init_context.context_type = context_type  # type: ignore
 
-        return cls(init_context, context_type=context_type)
+        return cls(init_context, context_type=context_type) 
 
     def __call__(self, *args: Any, **kwargs: Any) -> "Operation[T, S, C]":
         """
@@ -258,7 +287,9 @@ class Operation(Generic[T, S, C]):
 
         return awaitable().__await__()
 
-    def __rshift__(self, other: Union["Operation[S, R, C]", Any]) -> "Operation[T, R, C]":
+    def __rshift__(
+        self, other: Union["Operation[S, R, C]", Any]
+    ) -> "Operation[T, R, C]":
         """
         Implement the >> operator for composition (pipeline).
 
@@ -283,37 +314,43 @@ class Operation(Generic[T, S, C]):
         async def composed(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
             # Extract context from kwargs if available
             context = kwargs.get("context")
-            
+
             # Always include context in execution if available
             execution_kwargs = dict(kwargs)
-            
+
             self_result = await self.execute(*args, **execution_kwargs)
 
             if self_result.is_error():
-                return cast(Result[Any, Exception], self_result)  # Type cast to fix return type
+                return cast(
+                    Result[Any, Exception], self_result
+                )  # Type cast to fix return type
 
-            value = self_result.default_value(cast(S, None))  # Type cast to fix argument type
-            
+            value = self_result.default_value(
+                cast(S, None)
+            )  # Type cast to fix argument type
+
             # If the value is a BaseContext, it becomes the new context
             # and is NOT passed as a positional argument to the next operation
             if isinstance(value, BaseContext):
                 context = value
-                
+
                 # If other operation has placeholders, substitute them
                 if other.is_bound and other._has_placeholders():
                     # Here, we'll pass an empty value for placeholder substitution
                     # since the actual value (the context) is being passed via kwargs
                     empty_value = None
                     new_args, new_kwargs = other._substitute_placeholders(empty_value)
-                    
+
                     # Add the context to the kwargs
                     if context is not None:
                         new_kwargs["context"] = context
-                    
+
                     try:
                         result = await other.func(*new_args, **new_kwargs)
                         if isinstance(result, Result):
-                            return cast(Result[Any, Exception], result)  # Type cast to fix return type
+                            return cast(
+                                Result[Any, Exception], result
+                            )  # Type cast to fix return type
                         return Result.Ok(result)
                     except Exception as e:
                         return Result.Error(e)
@@ -335,15 +372,17 @@ class Operation(Generic[T, S, C]):
                 if other.is_bound and other._has_placeholders():
                     # Get substituted arguments
                     new_args, new_kwargs = other._substitute_placeholders(value)
-                    
+
                     # Always pass context to next operation if available
                     if context is not None:
                         new_kwargs["context"] = context
-                    
+
                     try:
                         result = await other.func(*new_args, **new_kwargs)
                         if isinstance(result, Result):
-                            return cast(Result[Any, Exception], result)  # Type cast to fix return type
+                            return cast(
+                                Result[Any, Exception], result
+                            )  # Type cast to fix return type
                         return Result.Ok(result)
                     except Exception as e:
                         return Result.Error(e)
@@ -396,13 +435,21 @@ class Operation(Generic[T, S, C]):
             )
 
             if result1.is_error():
-                return cast(Result[Tuple[Any, Any], Exception], result1)  # Type cast to fix return type
+                return cast(
+                    Result[Tuple[Any, Any], Exception], result1
+                )  # Type cast to fix return type
             if result2.is_error():
-                return cast(Result[Tuple[Any, Any], Exception], result2)  # Type cast to fix return type
+                return cast(
+                    Result[Tuple[Any, Any], Exception], result2
+                )  # Type cast to fix return type
 
-            value1 = result1.default_value(cast(S, None))  # Type cast to fix argument type
+            value1 = result1.default_value(
+                cast(S, None)
+            )  # Type cast to fix argument type
             value2 = result2.default_value(None)
-            return cast(Result[Tuple[Any, Any], Exception], Result.Ok((value1, value2)))  # Type cast to fix return type
+            return cast(
+                Result[Tuple[Any, Any], Exception], Result.Ok((value1, value2))
+            )  # Type cast to fix return type
 
         # Use the most specific context type
         context_type = self.context_type
@@ -436,9 +483,14 @@ class Operation(Generic[T, S, C]):
             result1 = await self.execute(*args, **self_kwargs)
 
             if result1.is_ok():
-                return cast(Result[Any, Exception], result1)  # Type cast to fix return type
+                return cast(
+                    Result[Any, Exception], result1
+                )  # Type cast to fix return type
 
-            return await other.execute(*args, **other_kwargs)
+            other_result = await other.execute(*args, **other_kwargs)
+            return cast(
+                Result[Any, Exception], other_result
+            )  # Type cast to fix return type
 
         # Use the most specific context type
         context_type = self.context_type
@@ -465,17 +517,23 @@ class Operation(Generic[T, S, C]):
             result = await self.execute(*args, **kwargs)
 
             if result.is_error():
-                return cast(Result[Any, Exception], result)  # Type cast to fix return type
+                return cast(
+                    Result[Any, Exception], result
+                )  # Type cast to fix return type
 
-            value = result.default_value(cast(S, None))  # Type cast to fix argument type
+            value = result.default_value(
+                cast(S, None)
+            )  # Type cast to fix argument type
 
             # If the value is a context object, don't transform it
             if isinstance(value, BaseContext):
-                return cast(Result[Any, Exception], Result.Ok(value))  # Type cast to fix return type
+                return cast(
+                    Result[Any, Exception], Result.Ok(value)
+                )  # Type cast to fix return type
 
             try:
                 if is_async_transform:
-                    transformed_value = await transform_func(value)
+                    transformed_value = transform_func(value)
                 else:
                     transformed_value = await asyncio.to_thread(transform_func, value)
 
@@ -516,9 +574,13 @@ class Operation(Generic[T, S, C]):
             result = await self.execute(*args, **kwargs)
 
             if result.is_error():
-                return cast(Result[Any, Exception], result)  # Type cast to fix return type
+                return cast(
+                    Result[Any, Exception], result
+                )  # Type cast to fix return type
 
-            value = result.default_value(cast(S, None))  # Type cast to fix argument type
+            value = result.default_value(
+                cast(S, None)
+            )  # Type cast to fix argument type
 
             # If the value is a context object, use it as the new context
             if isinstance(value, BaseContext):
@@ -526,12 +588,14 @@ class Operation(Generic[T, S, C]):
 
             try:
                 if is_async_binder:
-                    bind_result = await binder_func(value)
+                    bind_result = binder_func(value)
                 else:
                     bind_result = await asyncio.to_thread(binder_func, value)
 
                 if isinstance(bind_result, Result):
-                    return cast(Result[Any, Exception], bind_result)  # Type cast to fix return type
+                    return cast(
+                        Result[Any, Exception], bind_result
+                    )  # Type cast to fix return type
                 elif isinstance(bind_result, Operation):
                     # If bind_result is an Operation, execute it with context
                     execution_kwargs = {}
@@ -566,13 +630,19 @@ class Operation(Generic[T, S, C]):
             result = await self.execute(*args, **kwargs)
 
             if result.is_error():
-                return cast(Result[Any, Exception], result)  # Type cast to fix return type
+                return cast(
+                    Result[Any, Exception], result
+                )  # Type cast to fix return type
 
-            value = result.default_value(cast(S, None))  # Type cast to fix argument type
+            value = result.default_value(
+                cast(S, None)
+            )  # Type cast to fix argument type
 
             # If the value is a context, skip filtering
             if isinstance(value, BaseContext):
-                return cast(Result[Any, Exception], result)  # Type cast to fix return type
+                return cast(
+                    Result[Any, Exception], result
+                )  # Type cast to fix return type
 
             try:
                 if is_async_predicate:
@@ -582,7 +652,9 @@ class Operation(Generic[T, S, C]):
                     predicate_result = await asyncio.to_thread(predicate, value)
 
                 if predicate_result:
-                    return cast(Result[Any, Exception], result)  # Type cast to fix return type
+                    return cast(
+                        Result[Any, Exception], result
+                    )  # Type cast to fix return type
                 else:
                     return Result.Error(ValueError(error_msg))
             except Exception as e:
@@ -613,7 +685,7 @@ class Operation(Generic[T, S, C]):
 
                 try:
                     if is_async_handler:
-                        recovery_value = await error_handler(error)
+                        recovery_value = error_handler(error)
                     else:
                         recovery_value = await asyncio.to_thread(error_handler, error)
 
@@ -698,7 +770,9 @@ class Operation(Generic[T, S, C]):
                     result = await self.execute(*args, **attempt_kwargs)
 
                     if result.is_ok():
-                        return cast(Result[S, Exception], result)  # Type cast to fix return type
+                        return cast(
+                            Result[S, Exception], result
+                        )  # Type cast to fix return type
 
                     last_error = result.error
                 except Exception as e:
@@ -711,7 +785,7 @@ class Operation(Generic[T, S, C]):
 
         return Operation(retried, context_type=self.context_type)
 
-    def tap(self, side_effect: Callable[[S], None]) -> "Operation[T, S, C]":
+    def tap(self, side_effect: Callable[[S], Any]) -> "Operation[T, S, C]":
         """
         Apply a side effect to the result without changing it.
 
@@ -728,15 +802,21 @@ class Operation(Generic[T, S, C]):
             result = await self.execute(*args, **kwargs)
 
             if result.is_ok():
-                value = result.default_value(cast(S, None))  # Type cast to fix argument type
+                value = result.default_value(
+                    cast(S, None)
+                )  # Type cast to fix argument type
 
                 # Skip side effect if the value is a context
                 if isinstance(value, BaseContext):
-                    return cast(Result[S, Exception], result)  # Type cast to fix return type
+                    return cast(
+                        Result[S, Exception], result
+                    )  # Type cast to fix return type
 
                 try:
                     if is_async_side_effect:
-                        await safe_await(side_effect(value))  # Use safe_await for potentially non-awaitable values
+                        result_value = side_effect(value)
+
+                        await safe_await(result_value)
                     else:
                         await asyncio.to_thread(side_effect, value)
                 except Exception:
@@ -750,7 +830,7 @@ class Operation(Generic[T, S, C]):
     @classmethod
     def sequence(
         cls, operations: Collection["Operation"]
-    ) -> "Operation[Any, List[Any], Optional[Type[BaseContext]]]":
+    ) -> "Operation[Any, List[Any], Any]":
         """
         Run a sequence of operations and collect all results.
 
@@ -773,7 +853,9 @@ class Operation(Generic[T, S, C]):
                 op_result = await op.execute(*args, **op_kwargs)
 
                 if op_result.is_error():
-                    return cast(Result[List[Any], Exception], op_result)  # Type cast to fix return type
+                    return cast(
+                        Result[List[Any], Exception], op_result
+                    )  # Type cast to fix return type
 
                 value = op_result.default_value(None)
 
@@ -797,12 +879,12 @@ class Operation(Generic[T, S, C]):
                 elif issubclass(op.context_type, context_type):
                     context_type = op.context_type
 
-        return cls(sequenced, context_type=context_type)
+        return cast(Operation[Any, List[Any], Any], cls(sequenced, context_type=context_type))
 
     @classmethod
     def combine(
         cls, **named_ops: "Operation"
-    ) -> "Operation[Any, Dict[str, Any], Optional[Type[BaseContext]]]":
+    ) -> "Operation[Any, Dict[str, Any], Any]":
         """
         Combine multiple operations into a single operation that returns a dictionary.
 
@@ -828,7 +910,9 @@ class Operation(Generic[T, S, C]):
                 op_result = await op.execute(*args, **op_kwargs)
 
                 if op_result.is_error():
-                    return cast(Result[Dict[str, Any], Exception], op_result)  # Type cast to fix return type
+                    return cast(
+                        Result[Dict[str, Any], Exception], op_result
+                    )  # Type cast to fix return type
 
                 value = op_result.default_value(None)
 
@@ -854,7 +938,7 @@ class Operation(Generic[T, S, C]):
                 elif issubclass(op.context_type, context_type):
                     context_type = op.context_type
 
-        return cls(combined, context_type=context_type)
+        return cast(Operation[Any, Dict[str, Any], Any], cls(combined, context_type=context_type))
 
     @staticmethod
     def unit(value: T) -> "Operation[Any, T, None]":
@@ -898,7 +982,9 @@ class Operation(Generic[T, S, C]):
             if result.is_error():
                 raise result.error
 
-            return await cont(result.default_value(cast(S, None)))  # Type cast to fix argument type
+            return await cont(
+                result.default_value(cast(S, None))
+            )  # Type cast to fix argument type
 
         return run()
 
@@ -1003,7 +1089,6 @@ async def safe_await(value: Any) -> Any:
         return await value
     return value
 
-
 @overload
 def operation(
     func: Callable[..., Any],
@@ -1017,6 +1102,15 @@ def operation(
     context: bool = False,
     context_type: Optional[Type[BaseContext]] = None,
 ) -> Callable[[Callable], Operation[Any, Any, Any]]: ...
+
+
+@overload
+def operation(
+    func: Callable[..., Any],
+    *,
+    context: bool = False,
+    context_type: Optional[Type[BaseContext]] = None,
+) -> Operation[Any, Any, Any]: ...
 
 
 def operation(
