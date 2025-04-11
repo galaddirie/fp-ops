@@ -32,11 +32,6 @@ jobs:
           poetry config virtualenvs.create false
           poetry install --with dev
 
-      - name: Install Playwright
-        run: |
-          playwright install
-          playwright install-deps
-
       - name: Run tests with coverage
         run: |
           pytest --cov=fp_ops --cov-report=xml --cov-report=term tests/ -v

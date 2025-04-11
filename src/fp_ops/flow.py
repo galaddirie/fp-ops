@@ -1,4 +1,4 @@
-from typing import Any, Callable, Optional, Type, TypeVar, Union
+from typing import Any, Callable, Optional, Type, TypeVar, Union, cast, overload
 import inspect
 import time
 import asyncio
@@ -34,11 +34,12 @@ def branch(
             condition_kwargs = dict(kwargs)
             
             # Evaluate the condition - the key part is correctly executing Operations
-            condition_value = False
+            condition_value: bool = False
             
             if is_operation:
                 # If condition is an Operation, execute it
-                condition_result = await condition.execute(*args, **condition_kwargs)
+                condition_op = cast(Operation, condition)
+                condition_result = await condition_op.execute(*args, **condition_kwargs)
                 if condition_result.is_error():
                     return condition_result
                 condition_value = condition_result.default_value(False)
@@ -53,13 +54,15 @@ def branch(
                     condition_value = result.default_value(False)
                 else:
                     # If it unexpectedly doesn't return an Operation, use the value directly
-                    condition_value = op
+                    condition_value = bool(op)
             elif inspect.iscoroutinefunction(condition):
                 # For async functions, await them
-                condition_value = await condition(*args, **condition_kwargs)
+                condition_func = cast(Callable[..., bool], condition)
+                condition_value = await condition_func(*args, **condition_kwargs)  # type: ignore
             else:
                 # For regular functions, call directly
-                condition_value = condition(*args, **condition_kwargs)
+                condition_func = cast(Callable[..., bool], condition)
+                condition_value = condition_func(*args, **condition_kwargs)
             
             # Choose the appropriate branch based on the condition result
             if condition_value:
@@ -138,28 +141,28 @@ def attempt(
         try:
             if is_async:
                 # For async functions, await the coroutine to get the actual result
-                result = await risky_operation(*args, **kwargs)
+                result = await risky_operation(*args, **kwargs)  # type: ignore
                 
                 # If the function already returns a Result, use it directly
                 if isinstance(result, Result):
-                    return result
+                    return cast(Result[S, Exception], result)
                 # Otherwise, wrap the value in Result.Ok
                 return Result.Ok(result)
             else:
                 # For sync functions, run in a thread and handle the result
-                result = await asyncio.to_thread(risky_operation, *args, **kwargs)
+                result = await asyncio.to_thread(lambda: risky_operation(*args, **kwargs))
                 
                 # If the function already returns a Result, use it directly
                 if isinstance(result, Result):
-                    return result
+                    return cast(Result[S, Exception], result)
                 # Otherwise, wrap the value in Result.Ok
                 return Result.Ok(result)
         except Exception as e:
             return Result.Error(e)
 
     # Mark the wrapped function with context requirements
-    attempt_func.requires_context = context  # type: ignore
-    attempt_func.context_type = context_type  # type: ignore
+    setattr(attempt_func, "requires_context", context)
+    setattr(attempt_func, "context_type", context_type)
 
     return Operation(attempt_func, context_type=context_type)
 
@@ -226,9 +229,9 @@ def tap(
         An operation that applies the side effect without changing the value.
     """
     # Mark the side_effect function with context requirements if needed
-    if hasattr(side_effect, "__call__") and not hasattr(side_effect, "requires_context"):
-        side_effect.requires_context = context
-        side_effect.context_type = context_type
+    if callable(side_effect) and not hasattr(side_effect, "requires_context"):
+        setattr(side_effect, "requires_context", context)
+        setattr(side_effect, "context_type", context_type)
         
     return operation.tap(side_effect)
 

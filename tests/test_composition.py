@@ -834,7 +834,7 @@ async def test_zip_empty():
     
     # Assert - should return empty list
     assert result.is_ok()
-    assert result.default_value(None) == []
+    assert result.default_value(None) == ()
 
 @pytest.mark.asyncio
 async def test_zip_with_error():

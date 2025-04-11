@@ -292,15 +292,15 @@ def reduce(operation: Operation, func: Callable[[Any, Any], Any]) -> Operation:
     
     return Operation(reduced, context_type=operation.context_type)
 
-
+#TODO:  should zip be a tuple or a list?
 def zip(*operations: Operation) -> Operation:
     """
     Zip a list of operations.
     """
     # Similar to parallel but with a different output structure
-    async def zip_op(*args: Any, **kwargs: Any) -> Result[List[Tuple[Any, ...]], Exception]:
+    async def zip_op(*args: Any, **kwargs: Any) -> Result[Tuple[Any, ...], Exception]:
         if not operations:
-            return Result.Ok([])
+            return Result.Ok(())
         
         # Run all operations in parallel
         results = await parallel(*operations).execute(*args, **kwargs)
@@ -364,7 +364,7 @@ def group_by(operation: Operation, func: Callable[[Any], Any]) -> Operation:
         
         try:
             # Group items by the key function
-            groups = {}
+            groups: Dict[Any, List[Any]] = {}
             for item in value:
                 key = func(item)
                 if key not in groups:
