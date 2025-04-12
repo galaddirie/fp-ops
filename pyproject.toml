@@ -1,5 +1,5 @@
 [project]
-name = "fp-operator"
+name = "fp-ops"
 version = "0.1.0"
 description = "an ergonomic wrapper around the expression library"
 authors = [
@@ -24,8 +24,8 @@ dependencies = [
 ]
 
 [project.urls]
-"GitHub" = "https://github.com/galaddirie/fp-operator"
-"Bug Tracker" = "https://github.com/galaddirie/fp-operator/issues"
+"GitHub" = "https://github.com/galaddirie/fp-ops"
+"Bug Tracker" = "https://github.com/galaddirie/fp-ops/issues"
 
 
 [tool.poetry.group.dev.dependencies]
