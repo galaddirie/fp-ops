@@ -1,10 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.2]
 
 ### Added
 
 ### Fixed
+preserve function signature, docstring and other metadata
 
 ### Changed
 
