@@ -17,6 +17,7 @@ from typing import (
     Awaitable,
     cast,
     overload,
+    ParamSpec,
     Protocol,
     runtime_checkable,
 )
@@ -25,11 +26,13 @@ from expression import Result
 from .placeholder import Placeholder
 from .context import BaseContext
 
-T = TypeVar("T")
-S = TypeVar("S")
-R = TypeVar("R")
-E = TypeVar("E", bound=Exception)
-C = TypeVar("C", bound=Optional[BaseContext])
+T = TypeVar("T") # type of the input
+S = TypeVar("S") # type of the output
+R = TypeVar("R") # type of the result
+E = TypeVar("E", bound=Exception) # type of the error
+C = TypeVar("C", bound=Optional[BaseContext]) # type of the context
+P = ParamSpec("P")  # Captures all parameter types
+
 OptC = Optional[Type[BaseContext]]  # Type alias for optional context type
 
 
@@ -51,6 +54,18 @@ class Operation(Generic[T, S, C]):
     This class implements the continuation monad pattern to make composition work smoothly
     with async/await syntax.
     """
+
+    func: Callable[..., Awaitable[Any]]
+    bound_args: Optional[Tuple[Any, ...]]
+    bound_kwargs: Optional[Dict[str, Any]]
+    is_bound: bool
+    requires_context: bool
+    context_type: Optional[Type[BaseContext]]
+    __name__: str
+    __doc__: str
+    __signature__: Optional[inspect.Signature]
+    __annotations__: Dict[str, Any]
+    __module__: str
 
     def __init__(
         self,
@@ -76,7 +91,23 @@ class Operation(Generic[T, S, C]):
         self.requires_context = getattr(func, "requires_context", False)
         self.context_type = context_type or getattr(func, "context_type", None)
         self.__name__ = getattr(func, "__name__", "unknown")
-        self.__doc__ = getattr(func, "__doc__", "")
+
+    def __get_type_hints__(self) -> Dict[str, Any]:
+        """Helper method for IDEs to get type hints from the original function."""
+        return getattr(self, "__annotations__", {})
+
+    
+    def __str__(self) -> str:
+        """Return a string representation including the docstring."""
+        name = getattr(self, "__name__", "Operation")
+        doc = self.__doc__ or ""
+        sig = getattr(self, "__signature__", None)
+        sig_str = str(sig) if sig else "()"
+        return f"{name}{sig_str}\n{doc}"
+
+    def __repr__(self) -> str:
+        """Return a representation including the docstring."""
+        return self.__str__()
 
     async def execute(self, *args: Any, **kwargs: Any) -> Result[S, Exception]:
         """
@@ -266,10 +297,22 @@ class Operation(Generic[T, S, C]):
             return self
 
         # Preserve context when binding arguments
-        bound_kwargs = dict(kwargs)
+        bound_kwargs = dict(self.bound_kwargs or {})
+        if kwargs:
+            bound_kwargs.update(kwargs)
 
-        return Operation(self.func, args, bound_kwargs, context_type=self.context_type)
-
+        new_op: Operation[T, S, C] = Operation(self.func, args, bound_kwargs, context_type=self.context_type)
+        
+        # Copy all metadata attributes to the new operation
+        for attr in [
+            '__doc__', '__name__', '__qualname__', '__annotations__', 
+            '__module__', '__signature__', 'original_function'
+        ]:
+            if hasattr(self, attr):
+                setattr(new_op, attr, getattr(self, attr))
+        
+        return new_op
+    
     def __await__(self) -> Any:
         """
         Make Operation awaitable in async functions.
@@ -288,8 +331,8 @@ class Operation(Generic[T, S, C]):
         return awaitable().__await__()
 
     def __rshift__(
-        self, other: Union["Operation[S, R, C]", Any]
-    ) -> "Operation[T, R, C]":
+        self, other: Union["Operation[T, S, C]", Any]
+    ) -> "Operation[T, S, C]":
         """
         Implement the >> operator for composition (pipeline).
 
@@ -500,7 +543,7 @@ class Operation(Generic[T, S, C]):
 
         return Operation(alternative, context_type=context_type)
 
-    def map(self, transform_func: Callable[[S], R]) -> "Operation[T, R, C]":
+    def map(self, transform_func: Callable[[S], R]) -> "Operation[T, S, C]":
         """
         Apply a transformation to the output of this operation.
 
@@ -555,7 +598,7 @@ class Operation(Generic[T, S, C]):
                 "Operation",
             ],
         ],
-    ) -> "Operation[T, R, C]":
+    ) -> "Operation[T, S, C]":
         """
         Bind this operation to another operation using a binding function.
 
@@ -1100,36 +1143,13 @@ async def safe_await(value: Any) -> Any:
         return await value
     return value
 
-@overload
-def operation(
-    func: Callable[..., Any],
-) -> Operation[Any, Any, Any]: ...
 
-
-@overload
 def operation(
-    func: None = None,
+    func: Optional[Callable[P, R]] = None,
     *,
     context: bool = False,
     context_type: Optional[Type[BaseContext]] = None,
-) -> Callable[[Callable], Operation[Any, Any, Any]]: ...
-
-
-@overload
-def operation(
-    func: Callable[..., Any],
-    *,
-    context: bool = False,
-    context_type: Optional[Type[BaseContext]] = None,
-) -> Operation[Any, Any, Any]: ...
-
-
-def operation(
-    func: Optional[Callable[..., Any]] = None,
-    *,
-    context: bool = False,
-    context_type: Optional[Type[BaseContext]] = None,
-) -> Union[Operation[Any, Any, Any], Callable[[Callable], Operation[Any, Any, Any]]]:
+) -> Operation[Callable[P, R], S, C]:
     """
     Decorator to convert a function (sync or async) into an Operation.
 
@@ -1141,35 +1161,54 @@ def operation(
     Returns:
         An Operation that wraps the function.
     """
+    def decorator(f: Callable[P, R]) -> Operation[Callable[P, R], S, C]: #type: ignore
+        if isinstance(f, Operation):
+            # Keep context requirement if already an Operation
+            f.requires_context = getattr(f, "requires_context", context)
+            f.context_type = getattr(f, "context_type", context_type)
+            return f
+
+        is_async = inspect.iscoroutinefunction(f)
+        
+        # Capture original signature and annotations
+        original_signature = inspect.signature(f)
+        original_annotations = getattr(f, "__annotations__", {})
+        original_doc = f.__doc__ or ""
+
+        @wraps(f)  # Use functools.wraps to preserve metadata
+        async def async_wrapped(*args: Any, **kwargs: Any) -> Any:
+            try:
+                if is_async:
+                    result = await cast(Callable[..., Awaitable[R]], f)(*args, **kwargs)
+                else:
+                    result = await asyncio.to_thread(f, *args, **kwargs)
+
+                if isinstance(result, Result):
+                    return result
+                return result  # Let execute() wrap in Result.Ok
+            except Exception as e:
+                return Result.Error(e)
+
+        # Mark the function with context requirements
+        async_wrapped.requires_context = context  # type: ignore
+        async_wrapped.context_type = context_type  # type: ignore
+        async_wrapped.__annotations__ = original_annotations
+        async_wrapped.__name__ = f.__name__
+        async_wrapped.__doc__ = original_doc
+        # Create the operation
+        op: Operation[Callable[P, R], S, C] = Operation(async_wrapped, context_type=context_type)
+        
+        # Preserve the signature, docstring and other metadata
+        op.__name__ = f.__name__
+        op.__doc__ = original_doc  # Explicitly set the docstring
+        op.__annotations__ = original_annotations
+        op.__module__ = f.__module__
+                
+        return op
+    
     if func is None:
-        return lambda f: operation(f, context=context, context_type=context_type)
-
-    if isinstance(func, Operation):
-        # Keep context requirement if already an Operation
-        func.requires_context = getattr(func, "requires_context", context)
-        func.context_type = getattr(func, "context_type", context_type)
-        return func
-
-    is_async = inspect.iscoroutinefunction(func)
-
-    async def async_wrapped(*args: Any, **kwargs: Any) -> Any:
-        try:
-            if is_async:
-                result = await func(*args, **kwargs)
-            else:
-                result = await asyncio.to_thread(func, *args, **kwargs)
-
-            if isinstance(result, Result):
-                return result
-            return result  # Let execute() wrap in Result.Ok
-        except Exception as e:
-            return Result.Error(e)
-
-    # Mark the function with context requirements
-    async_wrapped.requires_context = context  # type: ignore
-    async_wrapped.context_type = context_type  # type: ignore
-
-    return Operation(async_wrapped, context_type=context_type)
+        return cast(Operation[Callable[P, R], S, C], decorator)
+    return decorator(func)
 
 
 @operation
