@@ -47,21 +47,3 @@ class BaseContext(BaseModel):
                     setattr(result, field_name, field_value)
         
         return result
-
-class BrowserContext(BaseContext):
-    """Context for browser operations."""
-    browser_manager: Any
-    context_id: str
-    page_id: str
-    retry_count: int = 0
-    max_retries: int = 3
-    retry_delay_ms: int = 0
-    timeout_ms: int = 0
-
-    
-    
-class DataContext(BaseContext):
-    """Context for data processing operations."""
-    data_source: str
-    cache_enabled: bool = True
-    max_records: int = 1000

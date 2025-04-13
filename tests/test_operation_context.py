@@ -256,8 +256,70 @@ class TestBasicContext:
         context = result.default_value(None)
         assert isinstance(context, TestContext)
         assert context.value == "factory"
+        
         assert context.counter == 5
     
+    @pytest.mark.asyncio
+    async def test_context_chaining_with_factory(self, context_factory):
+        """Test chaining operations with a context factory."""
+        # Create an operation that initializes context with a factory
+        init_context = Operation.with_context(context_factory, context_type=TestContext)
+        
+        # Create operations that use and modify the context
+        @operation(context=True, context_type=TestContext)
+        async def increment_counter(**kwargs):
+            context = kwargs["context"]
+            new_context = TestContext(value=context.value, counter=context.counter + 1)
+            return new_context
+        
+        @operation(context=True, context_type=TestContext)
+        async def get_context_values(**kwargs):
+            context = kwargs["context"]
+            return {"value": context.value, "counter": context.counter}
+        
+        # Chain operations: initialize context -> modify context -> read context
+        pipeline = init_context >> increment_counter >> increment_counter >> get_context_values
+        
+        # Execute the pipeline
+        result = await pipeline()
+        
+        # Verify results
+        assert result.is_ok()
+        values = result.default_value(None)
+        assert values["value"] == "factory"
+        assert values["counter"] == 7  # Initial 5 + increment 1
+    
+    @pytest.mark.asyncio
+    async def test_context_chaining_with_initial_context(self, test_context):
+        """Test chaining operations with an initial context."""
+        # Create operations that use and modify the context
+        @operation(context=True, context_type=TestContext)
+        async def append_to_value(**kwargs):
+            context = kwargs["context"]
+            new_context = TestContext(value=context.value + "_modified", counter=context.counter)
+            return new_context
+        
+        @operation(context=True, context_type=TestContext)
+        async def double_counter(**kwargs):
+            context = kwargs["context"]
+            new_context = TestContext(value=context.value, counter=context.counter * 2)
+            return new_context
+        
+        @operation(context=True, context_type=TestContext)
+        async def get_context_state(**kwargs):
+            context = kwargs["context"]
+            return f"{context.value}:{context.counter}"
+        
+        # Chain operations: modify value -> modify counter -> read context
+        pipeline = append_to_value >> double_counter >> get_context_state
+        
+        # Execute with initial context
+        result = await pipeline(context=test_context)
+        
+        # Verify results
+        assert result.is_ok()
+        state = result.default_value(None)
+        assert state == "test_modified:2"  # Modified value and doubled counter (1*2)
     @pytest.mark.asyncio
     async def test_context_required_missing(self, context_aware_op):
         """Test operation that requires context but none is provided."""
@@ -715,6 +777,7 @@ class TestComplexContextScenarios:
             app_op 
             >> browser_op("https://new-example.com") 
             >> data_op({"id": 2, "name": "New Item"})
+            >> data_op({"id": 3, "name": "New Item 2"})
             >> get_summary
         )
         
@@ -724,7 +787,7 @@ class TestComplexContextScenarios:
         assert result.is_ok()
         summary = result.default_value(None)
         assert summary["url"] == "https://new-example.com"
-        assert summary["data_count"] == 2  # Original item + new item
+        assert summary["data_count"] == 3  # Original item + new items
         assert summary["version"] == "2.0"  # Updated by app_op
     
     @pytest.mark.asyncio
