@@ -668,7 +668,8 @@ class TestOverloading:
             return a + b
         
         @operation
-        async def add_one(a: int) -> int:
+        def add_one(a: int) -> int:
+            """add one to the value"""
             return a + 1
         
         # Create a pipeline
@@ -758,11 +759,11 @@ class TestPlaceholders:
     async def test_placeholder_in_second_position(self):
         """Test placeholder usage in the second argument position."""
         @operation
-        async def add(a: int, b: int) -> int:
+        def add(a: int, b: int) -> int:
             return a + b
         
         @operation
-        async def multiply(a: int, b: int) -> int:
+        def multiply(a: int, b: int) -> int:
             return a * b
         
         # Test the placeholder in the second argument position
@@ -801,15 +802,15 @@ class TestPlaceholders:
     async def test_multiple_placeholders(self):
         """Test using multiple placeholders in a single operation."""
         @operation
-        async def add(a: int, b: int) -> int:
+        def add(a: int, b: int) -> int:
             return a + b
         
         @operation
-        async def multiply_by_itself(x: int) -> int:
+        def multiply_by_itself(x: int) -> int:
             return x * x
         
         @operation
-        async def complex_op(a: int, b: int, c: int) -> int:
+        def complex_op(a: int, b: int, c: int) -> int:
             return a * b + c
         
         # Generate a value then use it in multiple places
