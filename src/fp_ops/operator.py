@@ -1143,13 +1143,30 @@ async def safe_await(value: Any) -> Any:
         return await value
     return value
 
-
+@overload
 def operation(
-    func: Optional[Callable[P, R]] = None,
+    func: Callable[P, R],
     *,
     context: bool = False,
     context_type: Optional[Type[BaseContext]] = None,
-) -> Operation[Callable[P, R], S, C]:
+) -> Operation[Callable[P, R], S, C]: ...
+
+# Second overload: when decorator is used with args @operation(context=True)
+@overload
+def operation(
+    func: None = None,
+    *,
+    context: bool = False,
+    context_type: Optional[Type[BaseContext]] = None,
+) -> Callable[[Callable[P, R]], Operation[Callable[P, R], S, C]]: ...
+
+def operation(
+    func: Optional[Callable[..., Any]] = None,
+    *,
+    context: bool = False,
+    context_type: Optional[Type[BaseContext]] = None,
+) -> Union[Operation[Callable[P, R], S, C], Callable[[Callable[P, R]], Operation[Callable[P, R], S, C]]]:
+    
     """
     Decorator to convert a function (sync or async) into an Operation.
 
