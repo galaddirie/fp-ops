@@ -1,10 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.4]
 
 ### Added
+- addded deep chaining context tests
 
 ### Fixed
+- Always use bound_args for bound operations, regardless of passed args
 
 ### Changed
 
