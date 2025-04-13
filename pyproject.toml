@@ -1,6 +1,6 @@
 [project]
 name = "fp-ops"
-version = "0.1.3"
+version = "0.1.4"
 description = "an ergonomic wrapper around the expression library"
 authors = [
     {name = "Galad Dirie", email = "hello@galad.ca"}
