@@ -121,7 +121,8 @@ class Operation(Generic[T, S, C]):
             A Result containing the output or an error.
         """
         if self.is_bound:
-            actual_args = args or self.bound_args or ()  # Ensure it's always a tuple
+            # Always use bound_args for bound operations, regardless of passed args
+            actual_args = self.bound_args or ()  
             actual_kwargs = dict(self.bound_kwargs or {})
             if kwargs:
                 actual_kwargs.update(kwargs)
