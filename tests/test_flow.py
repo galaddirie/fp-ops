@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch, AsyncMock
 
 from fp_ops.context import BaseContext
 from fp_ops.operator import Operation, operation
+from fp_ops.placeholder import _
 from expression import Result
 
 # Import flow functions
@@ -17,6 +18,7 @@ from fp_ops.flow import (
     tap,
     loop_until,
     wait,
+    map_operations,
 )
 
 # Helper functions for testing
@@ -684,3 +686,383 @@ async def test_wait_with_context():
     assert result.default_value(None) == 42
     assert len(contexts_seen) == 2
     assert all(ctx is context for ctx in contexts_seen)
+
+#########################################
+# Tests for map_operations
+#########################################
+@pytest.mark.asyncio
+async def test_map_operations_sequential():
+    # Setup
+    @operation
+    def double(x):
+        return x * 2
+    
+    # Execute
+    map_op = map_operations(double)
+    result = await map_op.execute([1, 2, 3, 4, 5])
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value([]) == [2, 4, 6, 8, 10]
+
+@pytest.mark.asyncio
+async def test_map_operations_parallel():
+    # Setup - add a small delay to ensure parallel execution
+    @operation
+    async def slow_double(x):
+        await asyncio.sleep(0.01)
+        return x * 2
+    
+    # Execute
+    start_time = time.time()
+    map_op = map_operations(slow_double, parallel=True)
+    result = await map_op.execute([1, 2, 3, 4, 5])
+    end_time = time.time()
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value([]) == [2, 4, 6, 8, 10]
+    
+    # Check that it ran in parallel (total time should be close to the time for one operation)
+    # This is roughly checking that it's faster than running 5 operations sequentially
+    assert end_time - start_time < 0.05  # 5 ops * 0.01s = 0.05s if sequential
+
+@pytest.mark.asyncio
+async def test_map_operations_with_error():
+    # Setup
+    @operation
+    def maybe_error(x):
+        if x == 3:
+            raise ValueError("Error on 3")
+        return x * 2
+    
+    # Execute
+    map_op = map_operations(maybe_error)
+    result = await map_op.execute([1, 2, 3, 4, 5])
+    
+    # Assert
+    assert result.is_error()
+    assert isinstance(result.error, ValueError)
+    assert str(result.error) == "Error on 3"
+
+@pytest.mark.asyncio
+async def test_map_operations_with_context():
+    # Setup
+    context = TestContext(value="test_context")
+    
+    # Define operation that uses context
+    @operation(context=True, context_type=TestContext)
+    def with_context(x, context=None):
+        return f"{x}_{context.value}"
+    
+    # Execute
+    map_op = map_operations(with_context)
+    result = await map_op.execute([1, 2, 3], context=context)
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value([]) == ["1_test_context", "2_test_context", "3_test_context"]
+
+@pytest.mark.asyncio
+async def test_map_operations_with_context_parallel():
+    # Setup
+    context = TestContext(value="test_context")
+    
+    # Define operation that uses context
+    @operation(context=True, context_type=TestContext)
+    async def with_context_async(x, context=None):
+        await asyncio.sleep(0.01)
+        return f"{x}_{context.value}"
+    
+    # Execute
+    map_op = map_operations(with_context_async, parallel=True)
+    result = await map_op.execute([1, 2, 3], context=context)
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value([]) == ["1_test_context", "2_test_context", "3_test_context"]
+
+@pytest.mark.asyncio
+async def test_map_operations_empty_list():
+    # Setup
+    @operation
+    def double(x):
+        return x * 2
+    
+    # Execute
+    map_op = map_operations(double)
+    result = await map_op.execute([])
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value(None) == []
+
+@pytest.mark.asyncio
+async def test_map_operations_non_list_input():
+    # Setup
+    @operation
+    def double(x):
+        return x * 2
+    
+    # Execute
+    map_op = map_operations(double)
+    result = await map_op.execute("not_a_list")
+    
+    # Assert
+    assert result.is_error()
+    assert "First argument must be a list or tuple" in str(result.error)
+
+@pytest.mark.asyncio
+async def test_map_operations_with_composition():
+    # Setup - test with a composition of operations
+    @operation
+    def double(x):
+        return x * 2
+        
+    @operation
+    def add_one(x):
+        return x + 1
+    
+    # Compose operations
+    composed = double >> add_one
+    
+    # Execute
+    map_op = map_operations(composed)
+    result = await map_op.execute([1, 2, 3])
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value([]) == [3, 5, 7]  # (1*2)+1, (2*2)+1, (3*2)+1
+
+@pytest.mark.asyncio
+async def test_map_operations_with_async_chain():
+    # Setup - test with async operations in a chain
+    @operation
+    async def async_fetch(x):
+        await asyncio.sleep(0.01)  # Simulate async API call
+        return f"fetched-{x}"
+        
+    @operation
+    async def async_process(x):
+        await asyncio.sleep(0.01)  # Simulate async processing
+        return f"processed-{x}"
+    
+    # Compose async operations
+    async_chain = async_fetch >> async_process
+    
+    # Execute
+    map_op = map_operations(async_chain)
+    result = await map_op.execute(["a", "b", "c"])
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value([]) == ["processed-fetched-a", "processed-fetched-b", "processed-fetched-c"]
+
+@pytest.mark.asyncio
+async def test_map_operations_with_mixed_chain():
+    # Setup - test with both sync and async operations in a chain
+    @operation
+    def sync_transform(x):
+        return f"sync-{x}"
+        
+    @operation
+    async def async_transform(x):
+        await asyncio.sleep(0.01)
+        return f"async-{x}"
+    
+    # Compose mixed operations
+    mixed_chain = sync_transform >> async_transform
+    
+    # Execute
+    map_op = map_operations(mixed_chain)
+    result = await map_op.execute(["a", "b", "c"])
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value([]) == ["async-sync-a", "async-sync-b", "async-sync-c"]
+
+@pytest.mark.asyncio
+async def test_map_operations_with_async_result():
+    # Setup - an async operation that returns a list
+    @operation
+    async def get_items():
+        await asyncio.sleep(0.01)
+        return ["item1", "item2", "item3"]
+    
+    # Operation to apply to each item
+    @operation
+    def process_item(item):
+        return f"processed-{item}"
+    
+    # Chain operations - use the >> operator to pipe the result of get_items to map_operations
+    pipeline = get_items >> map_operations(process_item)
+    
+    # Execute the pipeline
+    result = await pipeline.execute()
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value([]) == ["processed-item1", "processed-item2", "processed-item3"]
+
+@pytest.mark.asyncio
+async def test_map_operations_in_complex_pipeline():
+    # Setup - a chain of operations with map_operations in the middle
+    @operation
+    async def get_numbers():
+        await asyncio.sleep(0.01)
+        return [1, 2, 3]
+    
+    @operation
+    def double(x):
+        return x * 2
+    
+    @operation
+    def sum_list(numbers):
+        return sum(numbers)
+    
+    # Create a pipeline: get numbers -> double each -> sum the results
+    pipeline = get_numbers >> map_operations(double) >> sum_list
+    
+    # Execute
+    result = await pipeline.execute()
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value(None) == 12  # (1*2) + (2*2) + (3*2) = 2 + 4 + 6 = 12
+
+@pytest.mark.asyncio
+async def test_map_operations_with_multiple_inputs_partial():
+    # Setup - an operation that requires two inputs
+    @operation
+    def add(a, b):
+        return a + b
+    
+    # Create a partially applied operation by binding the second parameter
+    add_10 = add(_, 10)  # Using placeholder for first param, binding 10 to second param
+    
+    # Execute
+    map_op = map_operations(add_10)
+    result = await map_op.execute([1, 2, 3])
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value([]) == [11, 12, 13]  # Each value + 10
+
+async def test_map_operations_with_multiple_inputs_partiat_in_long_chain():
+    # Setup - an operation that requires two inputs
+    @operation
+    def get_numbers():
+        return [1, 2, 3]
+    
+    @operation
+    def add(a, b):
+        return a + b
+    
+    @operation
+    def multiply(a, b):
+        return a * b
+    
+    @operation
+    def sum_list(numbers):
+        return sum(numbers)
+    
+    add_10 = add(_, 10)
+    
+    pipeline = (
+        get_numbers # [1, 2, 3]
+        >> map_operations(add_10) # [11, 12, 13]
+        >> map_operations(multiply(2)) # [22, 24, 26]
+        >> sum_list # 22 + 24 + 26 = 72
+    )
+    
+    result = await pipeline.execute()
+    
+    assert result.is_ok()
+    assert result.default_value(None) == 72 
+    
+@pytest.mark.asyncio
+async def test_map_operations_with_placeholder_position():
+    # Test with placeholder in different positions
+    @operation
+    def concat(prefix, item, suffix):
+        return f"{prefix}-{item}-{suffix}"
+    
+    # Placeholder in middle position
+    middle_placeholder = concat("pre", _, "post")
+    map_op = map_operations(middle_placeholder)
+    result = await map_op.execute(["a", "b", "c"])
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value([]) == ["pre-a-post", "pre-b-post", "pre-c-post"]
+    
+    # Placeholder in first position
+    first_placeholder = concat(_, "middle", "end")
+    map_op = map_operations(first_placeholder)
+    result = await map_op.execute(["start1", "start2"])
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value([]) == ["start1-middle-end", "start2-middle-end"]
+
+@pytest.mark.asyncio
+async def test_map_operations_with_dynamic_second_param():
+    # Setup - an operation that requires two inputs
+    @operation
+    def multiply(a, b):
+        return a * b
+    
+    # We want to map a list of first params against a list of second params
+    first_params = [1, 2, 3]
+    second_params = [10, 20, 30]
+    
+    # Using indices with placeholders
+    results = []
+    for i in range(len(first_params)):
+        # Create a partial application with the specific second param
+        multiply_with_param = multiply(_, second_params[i])
+        map_op = map_operations(multiply_with_param)
+        result = await map_op.execute([first_params[i]])
+        if result.is_ok():
+            results.extend(result.default_value([]))
+    
+    # Assert
+    assert results == [10, 40, 90]  # 1*10, 2*20, 3*30
+
+@pytest.mark.asyncio
+async def test_map_operations_zip_like_functionality():
+    # Setup - we want to map over two lists in parallel (like zip)
+    @operation
+    def concat(item, suffix):
+        return f"{item}-{suffix}"
+    
+    items = ["a", "b", "c"]
+    suffixes = ["x", "y", "z"]
+    
+    # First approach: create a list of tuples and use a wrapper
+    @operation
+    def concat_tuple(t):
+        item, suffix = t
+        # Directly return the formatted string, not an operation
+        return f"{item}-{suffix}"
+    
+    # Execute on list of tuples (similar to zip)
+    map_op = map_operations(concat_tuple)
+    result = await map_op.execute(list(zip(items, suffixes)))
+    
+    # Assert
+    assert result.is_ok()
+    assert result.default_value([]) == ["a-x", "b-y", "c-z"]
+    
+    # Alternative approach: using placeholder with one fixed param
+    results = []
+    for i, suffix in enumerate(suffixes):
+        # Create a partial application with the suffix fixed
+        concat_with_suffix = concat(_, suffix)
+        # Apply to the corresponding item
+        map_one = map_operations(concat_with_suffix)
+        one_result = await map_one.execute([items[i]])
+        if one_result.is_ok():
+            results.extend(one_result.default_value([]))
+    
+    assert results == ["a-x", "b-y", "c-z"]

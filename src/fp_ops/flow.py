@@ -1,4 +1,4 @@
-from typing import Any, Callable, Optional, Type, TypeVar, Union, cast, overload
+from typing import Any, Callable, Optional, Type, TypeVar, Union, cast, overload, List
 import inspect
 import time
 import asyncio
@@ -362,3 +362,214 @@ def wait(
             return Result.Error(TimeoutError(f"Operation timed out after {timeout} seconds"))
     
     return Operation(wait_func, context_type=operation.context_type)
+
+def map_operations(
+    operation: Operation,
+    parallel: bool = False,
+    context_type: Optional[Type[BaseContext]] = None,
+) -> Operation[List[Any], List[Any], Any]:
+    """
+    Create an operation that applies another operation to each item in an array.
+    
+    This can handle:
+    - Simple operations: map_operations(double)
+    - Operations with placeholders: map_operations(multiply(_, 2))
+    - Partially applied operations: map_operations(multiply(2))
+    - Composed operations: map_operations(double >> add_five)
+    - Composed operations with placeholders: map_operations(multiply(_, 2) >> add(_, 5))
+    - Composed partially applied operations: map_operations(multiply(2) >> add(5))
+    
+    Args:
+        operation: The operation to apply to each item. Can contain placeholders for partial application.
+        parallel: Whether to execute operations in parallel (True) or sequentially (False).
+        context_type: Optional type for the context this operation will use.
+        
+    Returns:
+        An operation that applies the given operation to each item in an array input.
+    """
+    async def mapped(*args: Any, **kwargs: Any) -> Result[List[Any], Exception]:
+        if not args or not isinstance(args[0], (list, tuple)):
+            return Result.Error(Exception("First argument must be a list or tuple"))
+        
+        values = args[0]
+        context = kwargs.get("context")
+        
+        try:
+            if parallel:
+                # Create tasks for parallel execution
+                tasks = []
+                for value in values:
+                    # Create a task for each value
+                    tasks.append(_process_single_value(operation, value, context))
+                
+                # Execute all tasks in parallel
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Process results, handling any exceptions
+                processed_results = []
+                for result in results:
+                    if isinstance(result, Exception):
+                        return Result.Error(result)
+                    processed_results.append(result)
+                
+                return Result.Ok(processed_results)
+            else:
+                # Sequential execution
+                results = []
+                for value in values:
+                    # Process each value sequentially
+                    try:
+                        result = await _process_single_value(operation, value, context)
+                        results.append(result)
+                    except Exception as e:
+                        return Result.Error(e)
+                
+                return Result.Ok(results)
+                
+        except Exception as e:
+            return Result.Error(e)
+    
+    # Determine context type for the operation
+    op_context_type = context_type
+    if operation.context_type is not None:
+        if op_context_type is None:
+            op_context_type = operation.context_type
+        elif issubclass(operation.context_type, op_context_type):
+            op_context_type = operation.context_type
+    
+    return Operation(mapped, context_type=op_context_type)
+
+async def _process_single_value(operation: Operation, value: Any, context: Optional[Any] = None) -> Any:
+    """
+    Process a single value through an operation, handling all the special cases.
+    
+    This function handles the core logic of executing an operation with a value,
+    including placeholder substitution and composition handling.
+    
+    Args:
+        operation: The operation to execute
+        value: The value to process
+        context: Optional context to pass to the operation
+        
+    Returns:
+        The result of processing the value through the operation
+    """
+    # Detect if this is a composed operation by checking for the attribute
+    is_composed = hasattr(operation.func, 'is_composed_func') and operation.func.is_composed_func
+    
+    # Prepare execution kwargs
+    execution_kwargs = {}
+    if context is not None:
+        execution_kwargs["context"] = context
+    
+    # Case 1: Composed operation with placeholders
+    if is_composed and operation._has_placeholders():
+        # For composed operations with placeholders, we need special handling
+        # Create a clone of the operation with the value substituted for placeholders
+        new_args, new_kwargs = operation._substitute_placeholders(value)
+        # Ensure context is included
+        if context is not None:
+            new_kwargs["context"] = context
+        
+        # Execute the composed operation with the substituted placeholders
+        result = await operation.func(*new_args, **new_kwargs)
+        if isinstance(result, Result):
+            if result.is_error():
+                raise result.error
+            return result.default_value(None)
+        return result
+    
+    # Case 2: Composed operation without placeholders, but possibly with partial application
+    elif is_composed:
+        try:
+            # First try to execute the composed operation directly
+            result = await operation.execute(**execution_kwargs)
+            if isinstance(result, Result):
+                if result.is_error():
+                    raise result.error
+                return result.default_value(None)
+            return result
+        except TypeError as e:
+            # If we get a TypeError about missing arguments, the operation might be
+            # partially applied. Let's try to add the value as the next argument.
+            if "missing" in str(e) and "argument" in str(e):
+                # Create a new operation with the value added as an argument
+                args = operation.bound_args or ()
+                args = args + (value,)
+                op_instance = Operation(
+                    operation.func, 
+                    args, 
+                    operation.bound_kwargs, 
+                    context_type=operation.context_type
+                )
+                result = await op_instance.execute(**execution_kwargs)
+                if isinstance(result, Result):
+                    if result.is_error():
+                        raise result.error
+                    return result.default_value(None)
+                return result
+            # If it's not a missing argument error, re-raise
+            raise
+    
+    # Case 3: Simple operation with placeholders
+    elif operation._has_placeholders():
+        # For operations with placeholders, substitute the value
+        new_args, new_kwargs = operation._substitute_placeholders(value)
+        # Ensure context is included
+        if context is not None:
+            new_kwargs["context"] = context
+        
+        # Create a new operation with substituted values
+        op_instance = Operation(
+            operation.func, 
+            new_args, 
+            new_kwargs, 
+            context_type=operation.context_type
+        )
+        result = await op_instance.execute()
+        if isinstance(result, Result):
+            if result.is_error():
+                raise result.error
+            return result.default_value(None)
+        return result
+    
+    # Case 4: Partially applied operation (no placeholders)
+    elif operation.is_bound:
+        try:
+            # First try to execute the bound operation as-is
+            result = await operation.execute(**execution_kwargs)
+            if isinstance(result, Result):
+                if result.is_error():
+                    raise result.error
+                return result.default_value(None)
+            return result
+        except TypeError as e:
+            # If we get a TypeError about missing arguments, add our value
+            if "missing" in str(e) and "argument" in str(e):
+                # Create a new operation with the value added as an argument
+                args = operation.bound_args or ()
+                args = args + (value,)
+                op_instance = Operation(
+                    operation.func, 
+                    args, 
+                    operation.bound_kwargs, 
+                    context_type=operation.context_type
+                )
+                result = await op_instance.execute(**execution_kwargs)
+                if isinstance(result, Result):
+                    if result.is_error():
+                        raise result.error
+                    return result.default_value(None)
+                return result
+            # If it's not a missing argument error, re-raise
+            raise
+    
+    # Case 5: Simple unbound operation
+    else:
+        # For unbound operations, just pass the value as the first argument
+        result = await operation.execute(value, **execution_kwargs)
+        if isinstance(result, Result):
+            if result.is_error():
+                raise result.error
+            return result.default_value(None)
+        return result

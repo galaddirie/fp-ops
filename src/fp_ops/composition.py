@@ -3,6 +3,8 @@ from typing import Any, List, Union, Callable, Tuple, Dict
 from fp_ops.operator import Operation, identity
 from fp_ops.context import BaseContext
 from expression import Result
+from fp_ops.placeholder import Placeholder
+import inspect
 
 # BUG: currently we do not bind the result of the previous operation to the next one, 
 # that might be desired but we need to also have the option to bind the result of the previous operation to the next one
@@ -324,27 +326,53 @@ def zip(*operations: Operation) -> Operation:
     return Operation(zip_op, context_type=context_type)
 
 
-def flat_map(operation: Operation, func: Callable[[Any], List[Any]]) -> Operation:
+def flat_map(operation: Union[Operation, Placeholder], func: Callable[[Any], List[Any]]) -> Operation:
     """
     Flat map a function to an operation.
     """
+    is_placeholder = isinstance(operation, Placeholder)
+    
     async def flat_mapped(*args: Any, **kwargs: Any) -> Result[List[Any], Exception]:
-        result = await operation.execute(*args, **kwargs)
-        
-        if result.is_error():
-            return result
+        # If operation is a placeholder, get the actual operation from first argument
+        if is_placeholder:
+            # Check if we have at least one argument
+            if not args:
+                return Result.Error(ValueError("Expected at least one argument for placeholder"))
             
-        value = result.default_value(None)
+            # First argument should be the operation result from previous step
+            actual_operation = args[0]
+            # If it's not an Operation, wrap it in an identity operation
+            if not isinstance(actual_operation, Operation):
+                actual_operation = identity
+                op_result = Result.Ok(args[0])  # Use the value directly
+            else:
+                # Execute the operation with remaining args
+                op_result = await actual_operation.execute(*args[1:], **kwargs)
+        else:
+            # Normal case - operation is provided directly
+            op_result = await operation.execute(*args, **kwargs)
+        
+        if op_result.is_error():
+            return op_result
+            
+        value = op_result.default_value(None)
         
         try:
-            mapped_values = func(value)
+            # Check if func is async
+            if inspect.iscoroutinefunction(func):
+                mapped_values = await func(value)
+            else:
+                mapped_values = await asyncio.to_thread(func, value)
+                
             # Flatten the list of lists
             flattened = [item for sublist in mapped_values for item in sublist]
             return Result.Ok(flattened)
         except Exception as e:
             return Result.Error(e)
     
-    return Operation(flat_mapped, context_type=operation.context_type)
+    # Get context_type appropriately
+    context_type = None if is_placeholder else getattr(operation, "context_type", None)
+    return Operation(flat_mapped, context_type=context_type)
 
 
 def group_by(operation: Operation, func: Callable[[Any], Any]) -> Operation:

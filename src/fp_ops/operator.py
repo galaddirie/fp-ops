@@ -91,11 +91,23 @@ class Operation(Generic[T, S, C]):
         self.requires_context = getattr(func, "requires_context", False)
         self.context_type = context_type or getattr(func, "context_type", None)
         self.__name__ = getattr(func, "__name__", "unknown")
+        self.__doc__ = getattr(func, "__doc__", "")
+        
+        # Initialize signature and annotations if available
+        if hasattr(func, "__signature__"):
+            self.__signature__ = getattr(func, "__signature__")
+        else:
+            try:
+                self.__signature__ = inspect.signature(func)
+            except (ValueError, TypeError):
+                self.__signature__ = None
+                
+        self.__annotations__ = getattr(func, "__annotations__", {})
+        self.__module__ = getattr(func, "__module__", "unknown")
 
     def __get_type_hints__(self) -> Dict[str, Any]:
         """Helper method for IDEs to get type hints from the original function."""
         return getattr(self, "__annotations__", {})
-
     
     def __str__(self) -> str:
         """Return a string representation including the docstring."""
@@ -108,7 +120,7 @@ class Operation(Generic[T, S, C]):
     def __repr__(self) -> str:
         """Return a representation including the docstring."""
         return self.__str__()
-
+    
     async def execute(self, *args: Any, **kwargs: Any) -> Result[S, Exception]:
         """
         Execute the operation with the given arguments.
@@ -120,172 +132,585 @@ class Operation(Generic[T, S, C]):
         Returns:
             A Result containing the output or an error.
         """
-        if self.is_bound:
-            # Always use bound_args for bound operations, regardless of passed args
-            actual_args = self.bound_args or ()  
-            actual_kwargs = dict(self.bound_kwargs or {})
-            if kwargs:
-                actual_kwargs.update(kwargs)
-        else:
-            actual_args = args
-            actual_kwargs = kwargs
-
-        # Extract context from kwargs
-        context = actual_kwargs.get("context")
-
-        # If this operation requires context
+        # Create a clean copy of kwargs to avoid modifying the original
+        execution_kwargs = dict(kwargs)
+        
+        # Extract context if available and ensure it's always in kwargs
+        context = kwargs.get("context")
+        if context is not None:
+            execution_kwargs["context"] = context
+        
+        # Execute the operation with the extracted helpers
+        result = await self._execute_operation(args, execution_kwargs)
+        
+        # Handle higher-order operations (operations that return operations)
+        if result.is_ok():
+            value = result.default_value(None)
+            
+            # If the result is another Operation, execute it
+            if isinstance(value, Operation):
+                # Get the remaining args (if any) to pass to the returned operation
+                remaining_args = args[1:] if len(args) > 1 else ()
+                
+                # Updated context should be passed to the higher-order operation
+                if context is not None:
+                    execution_kwargs["context"] = context
+                    
+                # Execute the returned operation
+                return await value.execute(*remaining_args, **execution_kwargs)
+                
+            # If the result is a context, update the context in the result
+            if isinstance(value, BaseContext):
+                # Return the context directly as it's a valid result
+                return cast(Result[S, Exception], Result.Ok(value))
+        
+        return cast(Result[S, Exception], result)
+    
+    async def _execute_operation(self, args: tuple, kwargs: dict) -> Result[Any, Exception]:
+        """
+        Core execution method for operations.
+        
+        Args:
+            args: Positional arguments for the operation
+            kwargs: Keyword arguments for the operation
+            
+        Returns:
+            Result object containing the output or an error
+        """
+        actual_args = self.bound_args or ()
+        if args:
+            actual_args = actual_args + args
+            
+        actual_kwargs = dict(self.bound_kwargs or {})
+        if kwargs:
+            actual_kwargs.update(kwargs)
+        
+        # Handle context validation
         if self.requires_context:
-            if context is None:
-                return Result.Error(
-                    Exception(
-                        f"Operation {self.__name__} requires a context, but none was provided"
-                    )
-                )
-
-            # If a specific context type is required, validate it
-            if self.context_type is not None and not isinstance(
-                context, self.context_type
-            ):
-                # Stricter validation for context types
-                try:
-                    # Only dictionaries should be converted automatically
-                    if isinstance(context, dict):
-                        context = self.context_type(**context)
-                        actual_kwargs["context"] = context
-                    # If it's a BaseContext but not the right type, we should fail
-                    elif isinstance(context, BaseContext):
-                        # Check for meaningful conversion - do the fields align?
-                        required_fields = set(self.context_type.__annotations__.keys())
-                        provided_fields = set(context.__annotations__.keys())
-
-                        # If the context doesn't have the required fields, fail
-                        if not required_fields.issubset(provided_fields):
-                            missing = required_fields - provided_fields
-                            return Result.Error(
-                                Exception(
-                                    f"Invalid context type for operation {self.__name__}: "
-                                    f"Expected {self.context_type.__name__}, got {type(context).__name__}. "
-                                    f"Missing fields: {missing}"
-                                )
-                            )
-
-                        # Attempt strict conversion
-                        try:
-                            # Only convert if the context has all the required fields
-                            context_data = context.model_dump()
-                            # Filter to only include fields expected by the target type
-                            filtered_data = {
-                                k: v
-                                for k, v in context_data.items()
-                                if k in required_fields or k == "metadata"
-                            }
-                            context = self.context_type(**filtered_data)
-                            actual_kwargs["context"] = context
-                        except Exception as e:
-                            return Result.Error(
-                                Exception(
-                                    f"Invalid context for operation {self.__name__}: "
-                                    f"Could not convert {type(context).__name__} to {self.context_type.__name__}: {e}"
-                                )
-                            )
-                    else:
-                        # Not a dict or BaseContext - explicit failure
-                        return Result.Error(
-                            Exception(
-                                f"Invalid context type for operation {self.__name__}: "
-                                f"Expected {self.context_type.__name__}, got {type(context).__name__}"
-                            )
-                        )
-                except Exception as e:
-                    return Result.Error(
-                        Exception(f"Invalid context for operation {self.__name__}: {e}")
-                    )
-
-        # Always include context in execution kwargs
-        elif context is not None:
-            actual_kwargs["context"] = context
-
+            context = actual_kwargs.get("context")
+            context_validation = await self._validate_context(context)
+            if context_validation.is_error():
+                return context_validation
+            if context_validation.is_ok():
+                actual_kwargs["context"] = context_validation.default_value(None)
+        
         try:
             result = await self.func(*actual_args, **actual_kwargs)
-
+            
             if isinstance(result, Result):
-                return cast(
-                    Result[S, Exception], result
-                )  # Type cast to fix return type
-            return cast(
-                Result[S, Exception], Result.Ok(result)
-            )  # Type cast to fix return type
+                return cast(Result[Any, Exception], result)
+            return cast(Result[Any, Exception], Result.Ok(result))
         except Exception as e:
             return Result.Error(e)
 
-    @classmethod
-    def with_context(
-        cls,
-        context_factory: Optional[Callable[..., Any]] = None,
-        context_type: Optional[Type[BaseContext]] = None,
-    ) -> "Operation[Any, Any, Any]":
+    async def _validate_context(self, context) -> Result[Any, Exception]:
         """
-        Create an operation that initializes a context.
-
+        Validate the operation context against the required context type.
+        
         Args:
-            context_factory: A factory function that creates a context object.
-                        If None, a default empty context of the specified type will be used.
-            context_type: The Pydantic model class for the context.
-                     If None, a dictionary will be used.
-
+            context: The context to validate
+            
         Returns:
-            An Operation that initializes a context.
+            Result containing the validated context or an error
         """
-        if context_factory is None:
-            # Default factory depends on whether a context type is provided
-            if context_type is not None:
-                context_factory = lambda: context_type()
-            else:
-                context_factory = lambda: BaseContext()
-
-        async def init_context(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
+        if context is None:
+            return Result.Error(
+                Exception(f"Operation {self.__name__} requires a context, but none was provided")
+            )
+            
+        # If a specific context type is required, validate it
+        if self.context_type is not None and not isinstance(context, self.context_type):
             try:
-                if inspect.iscoroutinefunction(context_factory):
-                    context = await context_factory(*args, **kwargs)
-                else:
-                    # Ensure context_factory is callable before passing to to_thread
-                    if callable(context_factory):
-                        context = await asyncio.to_thread(
-                            context_factory, *args, **kwargs
-                        )
-                    else:
+                # Only dictionaries should be converted automatically
+                if isinstance(context, dict):
+                    return Result.Ok(self.context_type(**context))
+                # If it's a BaseContext but not the right type, we should validate
+                elif isinstance(context, BaseContext):
+                    # Check for meaningful conversion - do the fields align?
+                    required_fields = set(self.context_type.__annotations__.keys())
+                    provided_fields = set(context.__annotations__.keys())
+                    
+                    # If the context doesn't have the required fields, fail
+                    if not required_fields.issubset(provided_fields):
+                        missing = required_fields - provided_fields
                         return Result.Error(
-                            Exception("context_factory must be callable")
+                            Exception(
+                                f"Invalid context type for operation {self.__name__}: "
+                                f"Expected {self.context_type.__name__}, got {type(context).__name__}. "
+                                f"Missing fields: {missing}"
+                            )
                         )
-
-                # Validate context against the context type if specified
-                if context_type is not None and not isinstance(context, context_type):
+                        
+                    # Attempt strict conversion
                     try:
-                        # Try to convert to the required context type
-                        if isinstance(context, dict):
-                            context = context_type(**context)
-                        else:
-                            context = context_type.model_validate(context)
+                        # Only convert if the context has all the required fields
+                        context_data = context.model_dump()
+                        # Filter to only include fields expected by the target type
+                        filtered_data = {
+                            k: v
+                            for k, v in context_data.items()
+                            if k in required_fields or k == "metadata"
+                        }
+                        return Result.Ok(self.context_type(**filtered_data))
                     except Exception as e:
                         return Result.Error(
-                            Exception(f"Invalid context from factory: {e}")
+                            Exception(
+                                f"Invalid context for operation {self.__name__}: "
+                                f"Could not convert {type(context).__name__} to {self.context_type.__name__}: {e}"
+                            )
                         )
-
-                return Result.Ok(context)  # Explicitly wrap in Result.Ok
+                else:
+                    # Not a dict or BaseContext - explicit failure
+                    return Result.Error(
+                        Exception(
+                            f"Invalid context type for operation {self.__name__}: "
+                            f"Expected {self.context_type.__name__}, got {type(context).__name__}"
+                        )
+                    )
+            except Exception as e:
+                return Result.Error(
+                    Exception(f"Invalid context for operation {self.__name__}: {e}")
+                )
+        
+        return Result.Ok(context)
+    
+    async def _process_operation_result(self, result: Result[Any, Exception]) -> Tuple[Any, bool]:
+        """
+        Process the result of an operation, extracting the value and determining if it's a higher-order operation.
+        
+        Args:
+            result: The Result object from an operation
+            
+        Returns:
+            Tuple of (value, is_higher_order) where:
+            - value is the extracted value from the Result
+            - is_higher_order is True if the value is an Operation
+        """
+        if result.is_error():
+            return result, False
+            
+        value = result.default_value(None)
+        is_higher_order = isinstance(value, Operation)
+        
+        return value, is_higher_order
+    
+    async def _execute_higher_order_operation(self, operation: 'Operation', args: tuple, kwargs: dict) -> Result[Any, Exception]:
+        """
+        Execute a higher-order operation (an operation that returns another operation).
+        
+        Args:
+            operation: The operation to execute
+            args: Additional positional arguments
+            kwargs: Additional keyword arguments
+            
+        Returns:
+            Result from executing the higher-order operation
+        """
+        # Get the remaining args (if any) to pass to the returned operation
+        remaining_args = args[1:] if len(args) > 1 else ()
+        
+        # Execute the returned operation
+        return await operation.execute(*remaining_args, **kwargs)
+    
+    def __rshift__(self, other: Union["Operation", Any]) -> "Operation":
+        """
+        Implement the >> operator for composition (pipeline).
+        
+        Args:
+            other: Another Operation or a callable to compose with this operation.
+            
+        Returns:
+            A new Operation representing the composition.
+        """
+        # Handle placeholders and callables
+        other = self._prepare_composition_target(other)
+        
+        async def composed(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
+            # Create a clean copy of kwargs to avoid modifying the original
+            execution_kwargs = dict(kwargs)
+            
+            # Extract context if available
+            context = kwargs.get("context")
+            if context is not None:
+                execution_kwargs["context"] = context
+            
+            # Execute the first operation
+            first_result = await self.execute(*args, **execution_kwargs)
+            
+            if first_result.is_error():
+                return cast(Result[Any, Exception], first_result)
+            
+            # Get the value from the first operation
+            value = first_result.default_value(None)
+            
+            # Update context if the result was a context object
+            if isinstance(value, BaseContext):
+                context = value
+                execution_kwargs["context"] = context
+                
+                # Execute second operation with the new context
+                return await self._execute_second_operation(other, None, execution_kwargs)
+            else:
+                # Execute second operation with the value from the first operation
+                return await self._execute_second_operation(other, value, execution_kwargs)
+        
+        return Operation(composed, context_type=other.context_type or self.context_type)
+    
+    def _prepare_composition_target(self, other: Union["Operation", Any]) -> "Operation":
+        """
+        Prepare the second operation in a composition pipeline.
+        
+        Args:
+            other: The operation or callable to prepare
+            
+        Returns:
+            An Operation instance ready for composition
+        """
+        if isinstance(other, Placeholder):
+            return identity
+        
+        if not isinstance(other, Operation):
+            if callable(other):
+                return operation(other)
+            else:
+                return constant(other)
+                
+        return other
+    
+    async def _execute_second_operation(
+        self, second_op: "Operation", value: Any, kwargs: Dict[str, Any]
+    ) -> Result[Any, Exception]:
+        """
+        Execute the second operation in a composition chain.
+        
+        Args:
+            second_op: The operation to execute
+            value: The value from the first operation
+            kwargs: Additional keyword arguments
+            
+        Returns:
+            Result from executing the second operation
+        """
+        context = kwargs.get("context")
+        
+        # Handle placeholders in bound operations
+        if second_op.is_bound and second_op._has_placeholders():
+            new_args, new_kwargs = second_op._substitute_placeholders(value)
+            
+            # Make sure context is included
+            if context is not None:
+                new_kwargs["context"] = context
+                
+            # Execute the function directly with substituted placeholders
+            try:
+                result = await second_op.func(*new_args, **new_kwargs)
+                if isinstance(result, Result):
+                    return cast(Result[Any, Exception], result)
+                return Result.Ok(result)
             except Exception as e:
                 return Result.Error(e)
-
-        # Mark the function as requiring context
-        init_context.requires_context = False  # type: ignore
-        init_context.context_type = context_type  # type: ignore
-
-        return cls(init_context, context_type=context_type) 
-
+        
+        # Handle bound operations without placeholders
+        elif second_op.is_bound:
+            execution_kwargs = {"context": context} if context else {}
+            return await second_op.execute(**execution_kwargs)
+        
+        # Handle normal operations (not bound)
+        else:
+            execution_kwargs = {"context": context} if context else {}
+            return await second_op.execute(value, **execution_kwargs)
+    
+    def _has_placeholders(self) -> bool:
+        """
+        Check if this operation has placeholders in its bound arguments.
+        
+        Returns:
+            True if there are placeholders, False otherwise
+        """
+        if not self.is_bound:
+            return False
+            
+        return self._contains_placeholder(self.bound_args) or self._contains_placeholder(self.bound_kwargs)
+    
+    def _contains_placeholder(self, obj: Any) -> bool:
+        """
+        Check if an object contains any Placeholder instances recursively.
+        
+        Args:
+            obj: The object to check.
+            
+        Returns:
+            True if obj contains a Placeholder, False otherwise.
+        """
+        # Base cases
+        if obj is None:
+            return False
+            
+        if isinstance(obj, Placeholder):
+            return True
+        
+        # Recursive cases for containers
+        if isinstance(obj, (list, tuple)):
+            return any(self._contains_placeholder(item) for item in obj)
+        
+        if isinstance(obj, dict):
+            return (
+                any(self._contains_placeholder(key) for key in obj) or 
+                any(self._contains_placeholder(value) for value in obj.values())
+            )
+        
+        # Default case: not a placeholder
+        return False
+    
+    def _substitute_placeholders(self, value: Any) -> Tuple[tuple, dict]:
+        """
+        Return new bound_args and bound_kwargs with placeholders substituted.
+        
+        Args:
+            value: The value to substitute for placeholders.
+            
+        Returns:
+            A tuple of (new_args, new_kwargs) with placeholders substituted.
+        """
+        if not self.is_bound:
+            return (), {}
+            
+        new_args = tuple(
+            self._substitute_placeholder(arg, value) for arg in self.bound_args or ()
+        )
+        
+        new_kwargs = {}
+        if self.bound_kwargs:
+            new_kwargs = {
+                self._substitute_placeholder(key, value): self._substitute_placeholder(val, value)
+                for key, val in self.bound_kwargs.items()
+            }
+        
+        return new_args, new_kwargs
+    
+    def _substitute_placeholder(self, obj: Any, value: Any) -> Any:
+        """
+        Substitute all Placeholder instances with the given value recursively.
+        
+        Args:
+            obj: The object to process.
+            value: The value to substitute for placeholders.
+            
+        Returns:
+            A new object with all placeholders replaced by the value.
+        """
+        # Base cases
+        if isinstance(obj, Placeholder):
+            return value
+        
+        # Recursive cases for containers
+        if isinstance(obj, list):
+            return [self._substitute_placeholder(item, value) for item in obj]
+        
+        if isinstance(obj, tuple):
+            return tuple(self._substitute_placeholder(item, value) for item in obj)
+        
+        if isinstance(obj, dict):
+            return {
+                self._substitute_placeholder(key, value): self._substitute_placeholder(val, value)
+                for key, val in obj.items()
+            }
+        
+        # Default case: return the object unchanged
+        return obj
+    
+    def returns_operation(self) -> bool:
+        """
+        Check if this operation is likely to return another operation.
+        
+        This is a heuristic based on return type hints.
+        
+        Returns:
+            True if the operation is expected to return another operation
+        """
+        if not hasattr(self.func, "__annotations__"):
+            return False
+            
+        return_annotation = self.func.__annotations__.get("return")
+        if return_annotation is None:
+            return False
+            
+        # Check if the return type annotation suggests an Operation
+        annotation_str = str(return_annotation)
+        return "Operation" in annotation_str
+    
+    async def apply(self, *args: Any, **kwargs: Any) -> "Operation":
+        """
+        Execute this operation and return the resulting operation.
+        
+        This is useful for higher-order operations that return other operations.
+        
+        Args:
+            *args: Positional arguments
+            **kwargs: Keyword arguments
+            
+        Returns:
+            The operation returned by executing this operation
+            
+        Raises:
+            TypeError: If this operation doesn't return another operation
+        """
+        result = await self.execute(*args, **kwargs)
+        
+        if result.is_error():
+            raise result.error
+            
+        value = result.default_value(None)
+        
+        if not isinstance(value, Operation):
+            raise TypeError(f"Operation {self.__name__} did not return another operation")
+            
+        return value
+    
+    def then(self, factory: Callable[[S], "Operation"]) -> "Operation":
+        """
+        Compose this operation with a function that returns another operation.
+        
+        This is a specialized method for working with higher-order operations.
+        
+        Args:
+            factory: A function that takes the result of this operation and returns another operation
+            
+        Returns:
+            A new operation representing the composition
+        """
+        is_async_factory = inspect.iscoroutinefunction(factory)
+        
+        async def higher_order_composed(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
+            # Extract context if available
+            context = kwargs.get("context")
+            execution_kwargs = dict(kwargs)
+            
+            # Execute the first operation
+            result = await self.execute(*args, **execution_kwargs)
+            
+            if result.is_error():
+                return cast(Result[Any, Exception], result)
+                
+            value = result.default_value(None)
+            
+            # Update context if the result was a context object
+            if isinstance(value, BaseContext):
+                context = value
+                execution_kwargs["context"] = context
+                # Create a dummy value for the factory since we can't use the context directly
+                value = None
+                
+            try:
+                # Get the next operation from the factory
+                if is_async_factory:
+                    next_op = await factory(value)
+                else:
+                    next_op = await asyncio.to_thread(factory, value)
+                    
+                if not isinstance(next_op, Operation):
+                    return Result.Error(
+                        TypeError(f"Factory did not return an Operation, got {type(next_op)}")
+                    )
+                    
+                # Execute the next operation with the context
+                return await next_op.execute(**{"context": context} if context else {})
+                
+            except Exception as e:
+                return Result.Error(e)
+                
+        return Operation(higher_order_composed, context_type=self.context_type)
+    
+    def with_context_type(self, context_type: Type[BaseContext]) -> "Operation":
+        """
+        Create a new operation with the specified context type.
+        
+        Args:
+            context_type: The context type to use
+            
+        Returns:
+            A new operation with the updated context type
+        """
+        new_op = Operation(
+            self.func, 
+            bound_args=self.bound_args, 
+            bound_kwargs=self.bound_kwargs, 
+            context_type=context_type
+        )
+        
+        # Copy metadata
+        for attr in [
+            '__doc__', '__name__', '__qualname__', '__annotations__', 
+            '__module__', '__signature__', 'requires_context'
+        ]:
+            if hasattr(self, attr):
+                setattr(new_op, attr, getattr(self, attr))
+                
+        return new_op
+    
+    def requires_context_of_type(self, context_type: Type[BaseContext]) -> "Operation":
+        """
+        Create a new operation that requires a specific context type.
+        
+        Args:
+            context_type: The required context type
+            
+        Returns:
+            A new operation with updated context requirements
+        """
+        new_op = self.with_context_type(context_type)
+        new_op.requires_context = True
+        
+        return new_op
+        
+    @classmethod
+    def create_context_converter(
+        cls, 
+        from_type: Type[BaseContext], 
+        to_type: Type[BaseContext]
+    ) -> "Operation":
+        """
+        Create an operation that converts between context types.
+        
+        Args:
+            from_type: The source context type
+            to_type: The target context type
+            
+        Returns:
+            An operation that converts context types
+        """
+        async def convert_context(context: from_type) -> to_type:
+            if not isinstance(context, from_type):
+                raise TypeError(f"Expected context of type {from_type.__name__}, got {type(context).__name__}")
+                
+            # Extract data from source context
+            context_data = context.model_dump()
+            
+            # Get target fields
+            target_fields = set(to_type.__annotations__.keys())
+            
+            # Filter data to include only fields expected by target type
+            filtered_data = {
+                k: v
+                for k, v in context_data.items()
+                if k in target_fields or k == "metadata"
+            }
+            
+            # Create new context instance
+            return to_type(**filtered_data)
+            
+        # Mark as requiring context
+        convert_context.requires_context = True  # type: ignore
+        convert_context.context_type = from_type  # type: ignore
+        
+        return cls(convert_context, context_type=to_type)
+        
     def __call__(self, *args: Any, **kwargs: Any) -> "Operation[T, S, C]":
         """
         Call the operation with the given arguments.
 
         If arguments are provided, this returns a new bound operation.
+        For partial application, combines any existing bound arguments with new ones.
 
         Args:
             *args: Positional arguments.
@@ -297,17 +722,20 @@ class Operation(Generic[T, S, C]):
         if not args and not kwargs and self.is_bound:
             return self
 
-        # Preserve context when binding arguments
+        # Combine with any existing bound arguments for proper currying
+        bound_args = self.bound_args or ()
+        new_bound_args = bound_args + args
+        
         bound_kwargs = dict(self.bound_kwargs or {})
         if kwargs:
             bound_kwargs.update(kwargs)
 
-        new_op: Operation[T, S, C] = Operation(self.func, args, bound_kwargs, context_type=self.context_type)
+        new_op: Operation[T, S, C] = Operation(self.func, new_bound_args, bound_kwargs, context_type=self.context_type)
         
         # Copy all metadata attributes to the new operation
         for attr in [
             '__doc__', '__name__', '__qualname__', '__annotations__', 
-            '__module__', '__signature__', 'original_function'
+            '__module__', '__signature__', 'requires_context'
         ]:
             if hasattr(self, attr):
                 setattr(new_op, attr, getattr(self, attr))
@@ -317,6 +745,9 @@ class Operation(Generic[T, S, C]):
     def __await__(self) -> Any:
         """
         Make Operation awaitable in async functions.
+        
+        For higher-order operations, this extracts and returns the inner Operation
+        directly to enable proper composition.
 
         Returns:
             An iterator that can be used with the await syntax.
@@ -324,128 +755,21 @@ class Operation(Generic[T, S, C]):
 
         async def awaitable() -> Any:
             if self.is_bound:
-                return await self.execute()
+                result = await self.execute()
             else:
                 # If not bound, execute with no arguments
-                return await self.execute()
+                result = await self.execute()
+                
+            # If the result contains an Operation, return the Operation itself
+            # This is crucial for higher-order operations
+            if result.is_ok():
+                value = result.default_value(None)
+                if isinstance(value, Operation):
+                    return value
+                    
+            return result
 
         return awaitable().__await__()
-
-    def __rshift__(
-        self, other: Union["Operation[T, S, C]", Any]
-    ) -> "Operation[T, S, C]":
-        """
-        Implement the >> operator for composition (pipeline).
-
-        If the other operation is bound and has placeholders, the result of this
-        operation will be substituted for those placeholders.
-
-        Args:
-            other: Another Operation or a constant.
-
-        Returns:
-            A new Operation representing the composition.
-        """
-        if isinstance(other, Placeholder):
-            other = identity
-
-        if not isinstance(other, Operation):
-            if callable(other):
-                other = operation(other)
-            else:
-                other = constant(other)
-
-        async def composed(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
-            # Extract context from kwargs if available
-            context = kwargs.get("context")
-
-            # Always include context in execution if available
-            execution_kwargs = dict(kwargs)
-
-            self_result = await self.execute(*args, **execution_kwargs)
-
-            if self_result.is_error():
-                return cast(
-                    Result[Any, Exception], self_result
-                )  # Type cast to fix return type
-
-            value = self_result.default_value(
-                cast(S, None)
-            )  # Type cast to fix argument type
-
-            # If the value is a BaseContext, it becomes the new context
-            # and is NOT passed as a positional argument to the next operation
-            if isinstance(value, BaseContext):
-                context = value
-
-                # If other operation has placeholders, substitute them
-                if other.is_bound and other._has_placeholders():
-                    # Here, we'll pass an empty value for placeholder substitution
-                    # since the actual value (the context) is being passed via kwargs
-                    empty_value = None
-                    new_args, new_kwargs = other._substitute_placeholders(empty_value)
-
-                    # Add the context to the kwargs
-                    if context is not None:
-                        new_kwargs["context"] = context
-
-                    try:
-                        result = await other.func(*new_args, **new_kwargs)
-                        if isinstance(result, Result):
-                            return cast(
-                                Result[Any, Exception], result
-                            )  # Type cast to fix return type
-                        return Result.Ok(result)
-                    except Exception as e:
-                        return Result.Error(e)
-                elif other.is_bound:
-                    # No placeholders, execute as bound with context only
-                    other_kwargs = {}
-                    if context is not None:
-                        other_kwargs["context"] = context
-                    return await other.execute(**other_kwargs)
-                else:
-                    # Not bound, execute with context only (no positional args)
-                    other_kwargs = {}
-                    if context is not None:
-                        other_kwargs["context"] = context
-                    return await other.execute(**other_kwargs)
-            else:
-                # Normal value (not a context), proceed with standard behavior
-                # If other operation has placeholders, substitute them
-                if other.is_bound and other._has_placeholders():
-                    # Get substituted arguments
-                    new_args, new_kwargs = other._substitute_placeholders(value)
-
-                    # Always pass context to next operation if available
-                    if context is not None:
-                        new_kwargs["context"] = context
-
-                    try:
-                        result = await other.func(*new_args, **new_kwargs)
-                        if isinstance(result, Result):
-                            return cast(
-                                Result[Any, Exception], result
-                            )  # Type cast to fix return type
-                        return Result.Ok(result)
-                    except Exception as e:
-                        return Result.Error(e)
-                elif other.is_bound:
-                    # No placeholders, execute as bound
-                    # Include context in execution if available
-                    other_kwargs = {}
-                    if context is not None:
-                        other_kwargs["context"] = context
-                    return await other.execute(**other_kwargs)
-                else:
-                    # If not bound, pass the value as first argument
-                    # Include context in execution if available
-                    other_kwargs = {}
-                    if context is not None:
-                        other_kwargs["context"] = context
-                    return await other.execute(value, **other_kwargs)
-
-        return Operation(composed, context_type=other.context_type or self.context_type)
 
     def __and__(
         self, other: Union["Operation[T, Any, C]", Any]
@@ -577,7 +901,7 @@ class Operation(Generic[T, S, C]):
 
             try:
                 if is_async_transform:
-                    transformed_value = transform_func(value)
+                    transformed_value = await transform_func(value)
                 else:
                     transformed_value = await asyncio.to_thread(transform_func, value)
 
@@ -632,7 +956,7 @@ class Operation(Generic[T, S, C]):
 
             try:
                 if is_async_binder:
-                    bind_result = binder_func(value)
+                    bind_result = await binder_func(value)
                 else:
                     bind_result = await asyncio.to_thread(binder_func, value)
 
@@ -729,7 +1053,7 @@ class Operation(Generic[T, S, C]):
 
                 try:
                     if is_async_handler:
-                        recovery_value = error_handler(error)
+                        recovery_value = await error_handler(error)
                     else:
                         recovery_value = await asyncio.to_thread(error_handler, error)
 
@@ -1043,101 +1367,69 @@ class Operation(Generic[T, S, C]):
 
         return run()
 
-    def _has_placeholders(self) -> bool:
+    @classmethod
+    def with_context(
+        cls,
+        context_factory: Optional[Callable[..., Any]] = None,
+        context_type: Optional[Type[BaseContext]] = None,
+    ) -> "Operation[Any, Any, Any]":
         """
-        Check if this operation has placeholders in its bound arguments.
-
-        This checks recursively through nested data structures.
-        """
-        return self._contains_placeholder(
-            self.bound_args
-        ) or self._contains_placeholder(self.bound_kwargs)
-
-    def _contains_placeholder(self, obj: Any) -> bool:
-        """
-        Check if an object contains any Placeholder instances.
-
-        This recursively checks lists, tuples, and dictionaries.
+        Create an operation that initializes a context.
 
         Args:
-            obj: The object to check.
+            context_factory: A factory function that creates a context object.
+                        If None, a default empty context of the specified type will be used.
+            context_type: The Pydantic model class for the context.
+                     If None, a dictionary will be used.
 
         Returns:
-            True if obj contains a Placeholder, False otherwise.
+            An Operation that initializes a context.
         """
-        if isinstance(obj, Placeholder):
-            return True
+        if context_factory is None:
+            # Default factory depends on whether a context type is provided
+            if context_type is not None:
+                context_factory = lambda: context_type()
+            else:
+                context_factory = lambda: BaseContext()
 
-        if isinstance(obj, (list, tuple)):
-            return any(self._contains_placeholder(item) for item in obj)
+        async def init_context(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
+            try:
+                if inspect.iscoroutinefunction(context_factory):
+                    context = await context_factory(*args, **kwargs)
+                else:
+                    # Ensure context_factory is callable before passing to to_thread
+                    if callable(context_factory):
+                        context = await asyncio.to_thread(
+                            context_factory, *args, **kwargs
+                        )
+                    else:
+                        return Result.Error(
+                            Exception("context_factory must be callable")
+                        )
 
-        if isinstance(obj, dict):
-            return any(self._contains_placeholder(key) for key in obj) or any(
-                self._contains_placeholder(value) for value in obj.values()
-            )
+                # Validate context against the context type if specified
+                if context_type is not None and not isinstance(context, context_type):
+                    try:
+                        # Try to convert to the required context type
+                        if isinstance(context, dict):
+                            context = context_type(**context)
+                        else:
+                            context = context_type.model_validate(context)
+                    except Exception as e:
+                        return Result.Error(
+                            Exception(f"Invalid context from factory: {e}")
+                        )
 
-        return False
+                return Result.Ok(context)  # Explicitly wrap in Result.Ok
+            except Exception as e:
+                return Result.Error(e)
 
-    def _substitute_placeholders(self, value: Any) -> Tuple[tuple, dict]:
-        """
-        Return new bound_args and bound_kwargs with placeholders substituted.
+        # Mark the function as requiring context
+        init_context.requires_context = False  # type: ignore
+        init_context.context_type = context_type  # type: ignore
 
-        This recursively substitutes placeholders in nested data structures.
-
-        Args:
-            value: The value to substitute for placeholders.
-
-        Returns:
-            A tuple of (new_args, new_kwargs) with placeholders substituted.
-        """
-        new_args = tuple(
-            self._substitute_placeholder(arg, value) for arg in self.bound_args or ()
-        )
-
-        new_kwargs = {}
-        if self.bound_kwargs:
-            new_kwargs = {
-                self._substitute_placeholder(key, value): self._substitute_placeholder(
-                    val, value
-                )
-                for key, val in self.bound_kwargs.items()
-            }
-
-        return new_args, new_kwargs
-
-    def _substitute_placeholder(self, obj: Any, value: Any) -> Any:
-        """
-        Substitute all Placeholder instances with the given value.
-
-        This recursively processes lists, tuples, and dictionaries.
-
-        Args:
-            obj: The object to process.
-            value: The value to substitute for placeholders.
-
-        Returns:
-            A new object with all placeholders replaced by the value.
-        """
-        if isinstance(obj, Placeholder):
-            return value
-
-        if isinstance(obj, list):
-            return [self._substitute_placeholder(item, value) for item in obj]
-
-        if isinstance(obj, tuple):
-            return tuple(self._substitute_placeholder(item, value) for item in obj)
-
-        if isinstance(obj, dict):
-            return {
-                self._substitute_placeholder(key, value): self._substitute_placeholder(
-                    val, value
-                )
-                for key, val in obj.items()
-            }
-
-        return obj
-
-
+        return cls(init_context, context_type=context_type)
+    
 async def safe_await(value: Any) -> Any:
     """Safely await a value, handling both awaitable and non-awaitable values."""
     if inspect.isawaitable(value):
