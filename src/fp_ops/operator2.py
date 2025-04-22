@@ -28,10 +28,12 @@ C = TypeVar("C")
 P = ParamSpec("P")
 R = TypeVar("R")
 
+
 class Operation(Generic[T, S, C]):
     """
     A DAG node wrapping a function into composable ports and execution.
     """
+
     # core metadata
     func: Callable[..., Awaitable[Any]]
     name: str
@@ -66,7 +68,9 @@ class Operation(Generic[T, S, C]):
         wraps(func)(self)
         self.func = func
         self.name = name or func.__name__
-        self.requires_context = 'context' in inspect.signature(func).parameters or context
+        self.requires_context = (
+            "context" in inspect.signature(func).parameters or context
+        )
         self.context_type = context_type
 
         # binding initialization
@@ -94,7 +98,7 @@ class Operation(Generic[T, S, C]):
             self.target_handles[pname] = Handle(
                 self, HandleType.TARGET, pname, optional, default
             )
-        for out in ('result', 'error', 'context'):
+        for out in ("result", "error", "context"):
             self.source_handles[out] = Handle(self, HandleType.SOURCE, out)
 
     def __str__(self) -> str:
@@ -104,7 +108,7 @@ class Operation(Generic[T, S, C]):
         return f"{self.name}: {self.__doc__}"
 
     def __rshift__(self, other: Operation) -> Operation:
-        src = self.source_handles['result']
+        src = self.source_handles["result"]
         # build map of bound inputs from args and kwargs
         bound_map: Dict[str, Any] = {}
         if other.bound_kwargs:
@@ -131,7 +135,7 @@ class Operation(Generic[T, S, C]):
 
         # auto-wire first unbound input
         for name, handle in other.target_handles.items():
-            if name == 'context':
+            if name == "context":
                 continue
             if name not in bound_map:
                 src.connect(handle)
@@ -145,7 +149,7 @@ class Operation(Generic[T, S, C]):
         return self >> other
 
     def __call__(self, *args: Any, **kwargs: Any) -> Operation[T, S, C]:
-        is_pipeline = len(self.crawl('upstream')) > 1
+        is_pipeline = len(self.crawl("upstream")) > 1
         sig = inspect.signature(self.func)
 
         # placeholder-binding
@@ -168,7 +172,9 @@ class Operation(Generic[T, S, C]):
                         final[pname] = iter_args.pop(0)
                 return await self.func(**final)
 
-            return Operation(_wrapped, name=self.name, bound_args=args, bound_kwargs=kwargs)
+            return Operation(
+                _wrapped, name=self.name, bound_args=args, bound_kwargs=kwargs
+            )
 
         # constant-binding
         try:
@@ -178,6 +184,7 @@ class Operation(Generic[T, S, C]):
             can_const = False
 
         if can_const and (args or kwargs):
+
             @wraps(self.func)
             async def _wrapped_const(*in_args, **in_kwargs):
                 final: Dict[str, Any] = {}
@@ -189,7 +196,9 @@ class Operation(Generic[T, S, C]):
                         final[pname] = iter_args.pop(0)
                 return await self.func(**final)
 
-            return Operation(_wrapped_const, name=self.name, bound_args=args, bound_kwargs=kwargs)
+            return Operation(
+                _wrapped_const, name=self.name, bound_args=args, bound_kwargs=kwargs
+            )
 
         # pipeline-binding
         if is_pipeline:
@@ -213,7 +222,9 @@ class Operation(Generic[T, S, C]):
                     final[pname] = iter_args.pop(0)
             return await self.func(**final)
 
-        return Operation(_wrapped_partial, name=self.name, bound_args=args, bound_kwargs=kwargs)
+        return Operation(
+            _wrapped_partial, name=self.name, bound_args=args, bound_kwargs=kwargs
+        )
 
     def __await__(self) -> Any:
         return self.execute().__await__()
@@ -224,7 +235,7 @@ class Operation(Generic[T, S, C]):
         if not kwargs and self.bound_kwargs:
             kwargs = self.bound_kwargs or {}
 
-        nodes = list(reversed(self.crawl('upstream')))
+        nodes = list(reversed(self.crawl("upstream")))
         head = nodes[0]
 
         sig = inspect.signature(head.func)
@@ -241,9 +252,7 @@ class Operation(Generic[T, S, C]):
                     elif handle.optional:
                         state[(node, name)] = (Result.Ok(handle.default_value), None)
                     else:
-                        raise ValueError(
-                            f"Missing input '{name}' for '{node.name}'"
-                        )
+                        raise ValueError(f"Missing input '{name}' for '{node.name}'")
 
         for node in nodes:
             ctx = None
@@ -252,7 +261,9 @@ class Operation(Generic[T, S, C]):
                 handle = node.target_handles[name]
                 if handle.edges:
                     edge = handle.edges[-1]
-                    prev_res, prev_ctx = state[(edge.source_handle.node, edge.source_handle.name)]
+                    prev_res, prev_ctx = state[
+                        (edge.source_handle.node, edge.source_handle.name)
+                    ]
                     res = await edge.pipe(prev_res, prev_ctx)
                     state[(node, name)] = (res, prev_ctx)
                     args_list.append(res.default_value(None))
@@ -261,42 +272,58 @@ class Operation(Generic[T, S, C]):
                     args_list.append(res.default_value(None))
             try:
                 out_val = await node.func(*args_list)
-                state[(node, 'result')] = (Result.Ok(out_val), ctx)
+                state[(node, "result")] = (Result.Ok(out_val), ctx)
             except Exception as e:
-                state[(node, 'error')] = (Result.Error(e), ctx)
+                state[(node, "error")] = (Result.Error(e), ctx)
 
-        final_res, _ = state.get((self, 'result'), (Result.Error(ValueError('No result')), None))
+        final_res, _ = state.get(
+            (self, "result"), (Result.Error(ValueError("No result")), None)
+        )
         return final_res
 
-    def crawl(self, direction: str = 'upstream') -> List[Operation]:
+    def crawl(self, direction: str = "upstream") -> List[Operation]:
         visited: set[Operation] = set()
         order: List[Operation] = []
+
         def dfs(n: Operation):
             if n in visited:
                 return
             visited.add(n)
             order.append(n)
-            handles = n.target_handles.values() if direction == 'upstream' else n.source_handles.values()
+            handles = (
+                n.target_handles.values()
+                if direction == "upstream"
+                else n.source_handles.values()
+            )
             for h in handles:
                 for e in h.edges:
-                    nxt = e.source_handle.node if direction == 'upstream' else e.target_handle.node
+                    nxt = (
+                        e.source_handle.node
+                        if direction == "upstream"
+                        else e.target_handle.node
+                    )
                     dfs(nxt)
+
         dfs(self)
         return order
 
     def validate(self) -> None:
         for name, h in self.target_handles.items():
-            if not h.optional and not h.edges and name != 'context':
-                raise ValueError(f"Missing connection for required input '{name}' on '{self.name}'")
+            if not h.optional and not h.edges and name != "context":
+                raise ValueError(
+                    f"Missing connection for required input '{name}' on '{self.name}'"
+                )
 
     @staticmethod
     def unit(value: T) -> Operation[T, T, None]:
         return Operation(lambda x: x, name=f"unit({value})")
-    
+
     def map(self, func: Callable[[Any], Any]) -> Operation:
-        Edge(self.source_handles['result'], self.source_handles['result'], transform=func)
+        Edge(
+            self.source_handles["result"], self.source_handles["result"], transform=func
+        )
         return self
-    
+
     def filter(self, cond: Callable[[Any], bool]) -> Operation:
         return self.map(lambda x: x if cond(x) else None)
 
@@ -310,16 +337,17 @@ class Operation(Generic[T, S, C]):
     def combine(cls, **ops: Operation) -> Operation:
         return cls.sequence(*ops)
 
-
     def dot_notation(self) -> str:
-        """ build graph viz using dot notation"""
+        """build graph viz using dot notation"""
         import graphviz
+
         dot = graphviz.Digraph(comment=self.name)
-        for node in self.crawl('upstream'):
+        for node in self.crawl("upstream"):
             dot.node(node.name, node.name)
-        for node in self.crawl('downstream'):
+        for node in self.crawl("downstream"):
             dot.node(node.name, node.name)
         return dot.source
+
 
 @overload
 def operation(
@@ -329,6 +357,7 @@ def operation(
     context_type: Optional[Type[C]] = None,
 ) -> Operation[Callable[P, R], S, C]: ...
 
+
 @overload
 def operation(
     func: None,
@@ -336,6 +365,7 @@ def operation(
     context: bool = False,
     context_type: Optional[Type[C]] = None,
 ) -> Callable[[Callable[P, R]], Operation[Callable[P, R], S, C]]: ...
+
 
 def operation(
     func: Optional[Callable[..., Any]] = None,
@@ -347,15 +377,19 @@ def operation(
     Callable[[Callable[P, R]], Operation[Callable[P, R], S, C]],
 ]:
     """Decorator to convert a function into an Operation node."""
+
     def decorator(f: Callable[P, R]) -> Operation[Callable[P, R], S, C]:
         return Operation(f, context=context, context_type=context_type)
+
     if func is None:
         return decorator
     return Operation(func, context=context, context_type=context_type)
 
+
 @operation
 async def identity(x: int) -> int:
     return x
+
 
 @operation
 async def constant(x: int) -> int:
