@@ -4,11 +4,13 @@ and the alternative with bind + lambda
 example:
 
 ```python
-add(1, 2) >> multiply(_, 2) # 6
+from silk.placeholder import _
+add(1, 2) >> multiply(_, 2)
 
 # is equivalent to
+add(1, 2) >> (lambda x: multiply(x, 2))
 
-add(1, 2).bind(lambda x: multiply(x, 2)) # 6
+add(1, 2).bind(lambda x: multiply(x, 2))
 ```
 
 
