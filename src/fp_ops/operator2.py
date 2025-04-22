@@ -323,9 +323,24 @@ class Operation(Generic[T, S, C]):
             self.source_handles["result"], self.source_handles["result"], transform=func
         )
         return self
+    
+    def bind(self, binder_func: Callable[[Any], Awaitable[Result[Any, Exception]]]) -> Operation:
+        ...
 
     def filter(self, cond: Callable[[Any], bool]) -> Operation:
         return self.map(lambda x: x if cond(x) else None)
+
+    def catch(self, error_handler: Callable[[Exception], Any]) -> Operation:
+        ...
+
+    def default_value(self, default: Any) -> Operation:
+        ...
+
+    def retry(self, attempts: int = 3, delay: float = 0.1) -> Operation:
+        ...
+
+    def tap(self, side_effect: Callable[[Any], Any]) -> Operation:
+        ...
 
     def sequence(self, *ops: Operation) -> Operation:
         cur = self
@@ -335,7 +350,10 @@ class Operation(Generic[T, S, C]):
 
     @classmethod
     def combine(cls, **ops: Operation) -> Operation:
-        return cls.sequence(*ops)
+        ...
+
+    def apply_cont(self, cont: Callable[[Any], Awaitable[Any]]) -> Awaitable[Any]:
+        ...
 
     def dot_notation(self) -> str:
         """build graph viz using dot notation"""
