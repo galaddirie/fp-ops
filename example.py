@@ -92,6 +92,7 @@ if __name__ == "__main__":
 
         pipeline = add >> add_one
         pipeline.validate()
+        print(pipeline.dot_notation())
         # test the various ways to execute the pipeline
         result = await pipeline.execute(a=1, b=2)
         print(result)

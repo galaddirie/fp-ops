@@ -13,7 +13,7 @@ from typing import (
     Type,
     Awaitable,
     ParamSpec,
-    TYPE_CHECKING
+    TYPE_CHECKING,
 )
 from expression import Result
 
@@ -33,82 +33,79 @@ P = ParamSpec("P")  # Captures all parameter types
 
 
 class EdgeType(Enum):
-    """
-    The type of an edge in the operation DAG.
-    Represents the type of data that can be passed through the edge.
-
-    RESULT: Represents a successful result connection. This is the standard edge type
-    when connecting operations, e.g., a >> b
-
-    ERROR: Represents an error connection for propagating errors.
-
-    CONTEXT: Represents a context connection for propagating context objects.
-    """
-
     RESULT = "result"
     ERROR = "error"
     CONTEXT = "context"
 
 
 class HandleType(Enum):
-    """Type of a port (input or output)."""
-
     TARGET = "target"
     SOURCE = "source"
 
 
 class Handle:
-    def __init__(self, node: 'Operation', handle_type: HandleType, name: str, optional: bool = False, default_value: Any = None):
+    def __init__(
+        self,
+        node: Operation[Any, Any, Any],
+        handle_type: HandleType,
+        name: str,
+        optional: bool = False,
+        default_value: Any = None,
+    ):
         self.node = node
         self.handle_type = handle_type
         self.name = name
         self.optional = optional
         self.default_value = default_value
-        self.edges = []  # type: list[Edge]
+        self.edges: List[Edge] = []
 
-    def connect(self, target_handle: 'Handle', edge_type: EdgeType = EdgeType.RESULT, transform: Optional[Callable[[Any], Any]] = None):
+    def connect(
+        self,
+        target: Handle,
+        edge_type: EdgeType = EdgeType.RESULT,
+        transform: Optional[Callable[[Any], Any]] = None,
+    ) -> Edge:
         if self.handle_type != HandleType.SOURCE:
-            raise ValueError(f"Can only connect from SOURCE ports, not {self.handle_type}")
-        if target_handle.handle_type != HandleType.TARGET:
-            raise ValueError(f"Can only connect to TARGET ports, not {target_handle.handle_type}")
-        edge = Edge(self, target_handle, edge_type=edge_type, transform=transform)
+            raise ValueError("Can only connect from SOURCE handles")
+        if target.handle_type != HandleType.TARGET:
+            raise ValueError("Can only connect to TARGET handles")
+        edge = Edge(self, target, edge_type, transform)
         self.edges.append(edge)
-        target_handle.edges.append(edge)
+        target.edges.append(edge)
         return edge
 
+
 class Edge:
-    def __init__(self, source_handle: Handle, target_handle: Handle,
-                 edge_type: EdgeType = EdgeType.RESULT,
-                 transform: Optional[Callable[[Any], Any]] = None):
+    def __init__(
+        self,
+        source_handle: Handle,
+        target_handle: Handle,
+        edge_type: EdgeType = EdgeType.RESULT,
+        transform: Optional[Callable[[Any], Any]] = None,
+    ):
         self.source_handle = source_handle
         self.target_handle = target_handle
         self.edge_type = edge_type
         self.transform = transform
 
-    async def pipe(self, value: Any, context: Any = None) -> Result:
-        # Handle incoming Result or raw value
-        if isinstance(value, Result):
-            res = value
-        else:
-            res = Result.Ok(value)
-        # If error and not an ERROR edge, propagate unchanged
+    async def pipe(self, value: Any, context: Any = None) -> Result[Any, Exception]:
+        res = value if isinstance(value, Result) else Result.Ok(value)
         if res.is_error() and self.edge_type != EdgeType.ERROR:
             return res
-        # Apply transform if present
         if self.transform and res.is_ok():
             try:
-                out_val = res.default_value(None)
+                raw = res.default_value(None)
                 if inspect.iscoroutinefunction(self.transform):
-                    mapped = await self.transform(out_val)
+                    out = await self.transform(raw)
                 else:
-                    mapped = await asyncio.to_thread(self.transform, out_val)
-                return Result.Ok(mapped)
+                    out = await asyncio.to_thread(self.transform, raw)
+                return Result.Ok(out)
             except Exception as e:
                 return Result.Error(e)
         return res
 
-    def __str__(self):
-        return (f"Edge({self.source_handle.node.name}.{self.source_handle.name} -> "
-                f"{self.target_handle.node.name}.{self.target_handle.name}, "
-                f"type={self.edge_type.value})")
-
+    def __str__(self) -> str:
+        return (
+            f"Edge({self.source_handle.node.name}.{self.source_handle.name} -> "
+            f"{self.target_handle.node.name}.{self.target_handle.name}, type={self.edge_type.value})"
+        )
