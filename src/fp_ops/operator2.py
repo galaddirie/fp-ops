@@ -288,7 +288,22 @@ class Operation(Generic[T, S, C]):
         for o in ops:
             cur = cur >> o
         return cur
-          
+
+    @classmethod
+    def combine(cls, **ops: Operation) -> Operation:
+        return cls.sequence(*ops)
+
+
+    def dot_notation(self) -> str:
+        """ build graph viz using dot notation"""
+        import graphviz
+        dot = graphviz.Digraph(comment=self.name)
+        for node in self.crawl('upstream'):
+            dot.node(node.name, node.name)
+        for node in self.crawl('downstream'):
+            dot.node(node.name, node.name)
+        return dot.source
+
 @overload
 def operation(
     func: Callable[P, R],
