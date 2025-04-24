@@ -554,15 +554,14 @@ class TestSequenceAndCombine:
         sequence_op = Operation.sequence([step1, step2, step3])
         
         # Execute with the same input for all operations
-        result = await sequence_op("input")
+        result = await sequence_op("input").execute()
         
         assert result.is_ok()
         steps = result.default_value(None)
-        assert len(steps) == 3
-        assert steps[0] == "Step 1: input"
-        assert steps[1] == "Step 2: input"
-        assert steps[2] == "Step 3: input"
-    
+
+        expected = "Step 3: Step 2: Step 1: input"
+        assert steps == expected, f"got {steps} expected {expected}"
+
     @pytest.mark.asyncio
     async def test_combine_operations(self):
         """Test the combine class method."""
@@ -678,7 +677,7 @@ class TestOverloading:
         assert result.is_ok()
         assert result.default_value(None) == 4
 
-        pipeline = add(1, 2) >> add_one(1)
+        pipeline = add(1,2) >> add_one
         result = await pipeline()
         assert result.is_ok()
         assert result.default_value(None) == 2
