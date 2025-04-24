@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Tuple, MutableMapping, Callable
 
 from fp_ops.primitives import Edge, HandleId, OpSpec
 from fp_ops.execution import Step, ExecutionPlan
-from fp_ops.utils import _contains_ph, _fill
 from expression import Result
+
 
 class OpGraph:
     """DAG of OpSpecs wired by Edges."""
@@ -52,6 +52,7 @@ class OpGraph:
                 if e.target == target:
                     res.append(e)
         return res
+
     # ---------- compiler ---------------------------------------------
     def compile(
         self,
@@ -89,8 +90,10 @@ class OpGraph:
         for spec in order:
             sig = spec.signature
             param_names = [
-                p for p in sig.parameters
-                if sig.parameters[p].kind not in (
+                p
+                for p in sig.parameters
+                if sig.parameters[p].kind
+                not in (
                     inspect.Parameter.VAR_POSITIONAL,
                     inspect.Parameter.VAR_KEYWORD,
                 )
@@ -111,7 +114,7 @@ class OpGraph:
                             f"{spec.id}: parameter '{pname}' is bound via template "
                             "but has no upstream value"
                         )
-                    src_h = inc[-1].source         # last edge wins
+                    src_h = inc[-1].source  # last edge wins
                     tpl = spec.bound_template
                     if tpl.is_identity():
                         arg_getters.append(
@@ -119,8 +122,9 @@ class OpGraph:
                         )
                     else:
                         arg_getters.append(
-                            lambda st, sh=src_h, t=tpl:
-                                t.render(st[sh].default_value(None))[0][0]
+                            lambda st, sh=src_h, t=tpl: t.render(
+                                st[sh].default_value(None)
+                            )[0][0]
                         )
                     continue
 
