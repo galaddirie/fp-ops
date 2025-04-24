@@ -53,10 +53,15 @@ class OpGraph:
                     res.append(e)
         return res
     # ---------- compiler ---------------------------------------------
-    def compile(self, head_id: str, ext_args: Tuple[Any, ...], ext_kwargs: Dict[str, Any]) -> "ExecutionPlan":
+    def compile(
+        self,
+        head_id: str,
+        ext_args: Tuple[Any, ...],
+        ext_kwargs: Dict[str, Any],
+    ) -> "ExecutionPlan":
         head = self._nodes[head_id]
 
-        # Build topo-order upstream ------------------------------------------------
+        # ---- build topo-order upstream DAG ------------------------ #
         visited: set[str] = set()
         order: List[OpSpec] = []
 
@@ -71,75 +76,110 @@ class OpGraph:
 
         dfs(head)
 
-        # Key helper --------------------------------------------------------------
+        # ---- plan-building helpers -------------------------------- #
         def handle(spec: OpSpec, name: str = "result") -> HandleId:
             return HandleId(spec.id, name)
 
         arg_cursor = list(ext_args)
         steps: List[Step] = []
 
+        # ========================================================== #
+        # main loop over the topo-ordered specs                      #
+        # ========================================================== #
         for spec in order:
             sig = spec.signature
-            param_names = [p for p in sig.parameters if sig.parameters[p].kind not in (
-                inspect.Parameter.VAR_POSITIONAL,
-                inspect.Parameter.VAR_KEYWORD,
-            )]
+            param_names = [
+                p for p in sig.parameters
+                if sig.parameters[p].kind not in (
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                )
+            ]
+
             arg_getters: List[Callable[[MutableMapping[HandleId, Result]], Any]] = []
 
             for idx, pname in enumerate(param_names):
                 tgt_h = HandleId(spec.id, pname)
 
-                # bound value (possibly with placeholders) -----------------
-                template_val: Any | None = None
-                if pname in spec.bound_kwargs:
-                    template_val = spec.bound_kwargs[pname]
-                elif idx < len(spec.bound_args):
-                    template_val = spec.bound_args[idx]
-
-                has_ph = template_val is not None and _contains_ph(template_val)
-                inc_edges = self._incoming_edges(tgt_h)
-
-                # ---- 1. plain constant bound (highest priority) ----------
-                if template_val is not None and not has_ph:
-                    arg_getters.append(lambda _st, v=template_val: v)
-                    continue
-
-                # ---- 2. incoming edge ------------------------------------
-                if inc_edges:
-                    src_h = inc_edges[-1].source
-                    if has_ph:
+                # ------------------------------------------------------------------
+                # 0. bound *template*  (highest precedence)
+                # ------------------------------------------------------------------
+                if spec.bound_template is not None:
+                    inc = self._incoming_edges(tgt_h)
+                    if not inc:
+                        raise TypeError(
+                            f"{spec.id}: parameter '{pname}' is bound via template "
+                            "but has no upstream value"
+                        )
+                    src_h = inc[-1].source         # last edge wins
+                    tpl = spec.bound_template
+                    if tpl.is_identity():
                         arg_getters.append(
-                            lambda st, sh=src_h, tpl=template_val: _fill(tpl, st[sh].default_value(None))
+                            lambda st, sh=src_h: st[sh].default_value(None)
                         )
                     else:
-                        arg_getters.append(lambda st, sh=src_h: st[sh].default_value(None))
+                        arg_getters.append(
+                            lambda st, sh=src_h, t=tpl:
+                                t.render(st[sh].default_value(None))[0][0]
+                        )
                     continue
 
-                # ---- 3. external args / kwargs ---------------------------
+                # ------------------------------------------------------------------
+                # 1. plain constant bind  (former bound_args / bound_kwargs)
+                # ------------------------------------------------------------------
+                if pname in spec.bound_kwargs:
+                    value = spec.bound_kwargs[pname]
+                    arg_getters.append(lambda _st, v=value: v)
+                    continue
+                if idx < len(spec.bound_args):
+                    value = spec.bound_args[idx]
+                    arg_getters.append(lambda _st, v=value: v)
+                    continue
+
+                # ------------------------------------------------------------------
+                # 2. incoming edge
+                # ------------------------------------------------------------------
+                inc = self._incoming_edges(tgt_h)
+                if inc:
+                    src_h = inc[-1].source
+                    arg_getters.append(lambda st, sh=src_h: st[sh].default_value(None))
+                    continue
+
+                # ------------------------------------------------------------------
+                # 3. external args / kwargs
+                # ------------------------------------------------------------------
                 if pname in ext_kwargs:
-                    ext_v = ext_kwargs[pname]
-                    if has_ph:
-                        arg_getters.append(lambda _st, v=ext_v, tpl=template_val: _fill(tpl, v))
-                    else:
-                        arg_getters.append(lambda _st, v=ext_v: v)
+                    v = ext_kwargs[pname]
+                    arg_getters.append(lambda _st, v=v: v)
                     continue
                 if arg_cursor:
-                    ext_v = arg_cursor.pop(0)
-                    if has_ph:
-                        arg_getters.append(lambda _st, v=ext_v, tpl=template_val: _fill(tpl, v))
-                    else:
-                        arg_getters.append(lambda _st, v=ext_v: v)
+                    v = arg_cursor.pop(0)
+                    arg_getters.append(lambda _st, v=v: v)
                     continue
 
-                # ---- 4. default value ------------------------------------
+                # ------------------------------------------------------------------
+                # 4. default value in signature
+                # ------------------------------------------------------------------
                 if sig.parameters[pname].default is not inspect.Parameter.empty:
-                    default_v = sig.parameters[pname].default
-                    arg_getters.append(lambda _st, v=default_v: v)
+                    v = sig.parameters[pname].default
+                    arg_getters.append(lambda _st, v=v: v)
                     continue
 
+                # ------------------------------------------------------------------
+                # 5. nothing satisfied!
+                # ------------------------------------------------------------------
                 raise TypeError(f"{spec.id}: missing argument '{pname}'")
 
+            # ---- record the step ----------------------------------- #
+            steps.append(
+                Step(
+                    func=spec.func,
+                    arg_getters=tuple(arg_getters),
+                    result_handle=handle(spec),
+                )
+            )
 
-            steps.append(Step(func=spec.func, arg_getters=tuple(arg_getters), result_handle=handle(spec)))
-
-        return ExecutionPlan(steps=steps, final_handle=HandleId(head.id, "result"))
+        return ExecutionPlan(
+            steps=steps,
+            final_handle=HandleId(head.id, "result"),
+        )

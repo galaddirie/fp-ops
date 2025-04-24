@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 
 from expression import Result
 
-from .placeholder import Placeholder
+from .placeholder import Placeholder, Template
 from .context import BaseContext
 
 if TYPE_CHECKING:
@@ -53,6 +53,7 @@ class OpSpec(Generic[S, C]):
     signature: inspect.Signature
     requires_ctx: bool
     ctx_type: Type[C] | None
+    bound_template: Template | None = None           
     bound_args: Tuple[Any, ...] = ()
     bound_kwargs: Mapping[str, Any] = MappingProxyType({})
 

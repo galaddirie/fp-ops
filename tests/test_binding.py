@@ -397,25 +397,25 @@ class TestExecutionPatterns:
         pipeline.validate()
 
         # kwargs override only affect downstream, not already bound add(1,2)
-        result = await pipeline(a=5, b=6)
+        result = await pipeline(a=10, b=6)
         assert result.is_ok()
         # add(1,2)=3; add_one(??) uses kwargs (a ignored, the first positional)
-        assert result.default_value(None) == 4, "we should ignore the params passed in if we have a prebound op"
+        assert result.default_value(None) == 4, f"we should ignore the params passed in if we have a prebound op, got {result.default_value(None)}"
 
     @pytest.mark.asyncio
     async def test_prebound_ops_override_with_args(self):
         pipeline = add(1, 2) >> add_one
         pipeline.validate()
 
-        result = await pipeline(5, 6)
+        result = await pipeline(10, 6)
         assert result.is_ok()
-        assert result.default_value(None) == 4, "we should ignore the params passed in if we have a prebound op"
+        assert result.default_value(None) == 4, f"we should ignore the params passed in if we have a prebound op, got {result.default_value(None)}"
 
     @pytest.mark.asyncio
     async def test_prebound_ops_override_with_args_mixed_params(self):
         pipeline = add(1, 2) >> add_one
         pipeline.validate()
 
-        result = await pipeline(5, b=6)
+        result = await pipeline(10, b=6)
         assert result.is_ok()
-        assert result.default_value(None) == 4, "we should ignore the params passed in if we have a prebound op"
+        assert result.default_value(None) == 4, f"we should ignore the params passed in if we have a prebound op, got {result.default_value(None)}"

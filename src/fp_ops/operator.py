@@ -18,12 +18,13 @@ from typing import (
 import inspect
 import copy
 from types import MappingProxyType
+from dataclasses import replace
 
 from fp_ops.graph import OpGraph
 from fp_ops.primitives import HandleId, OpSpec
 from fp_ops.execution import ExecutionPlan, _default_executor
 
-from fp_ops.placeholder import Placeholder
+from fp_ops.placeholder import _, Template
 from fp_ops.context import BaseContext
 from fp_ops.utils import _contains_ph
 
@@ -42,7 +43,10 @@ class Operation(Generic[T, S, C]):
         graph.add_spec(spec)
         self._plan_cache: ExecutionPlan | None = None
 
-    def _clone(self) -> "Operation[T, S, C]":
+    def _spec(self) -> OpSpec:
+        return self._s
+
+    def _clone(self, spec: Optional[OpSpec] = None) -> "Operation[T, S, C]":
         """
         Return an immutable clone of *this stage* together with a **copy of
         the whole graph built so far**.  That lets us build new pipelines
@@ -57,11 +61,35 @@ class Operation(Generic[T, S, C]):
         for edges in self._g._edges_from.values():
             for e in edges:
                 g.connect(e.source, e.target)
-        return Operation(g, self._s)
+        return Operation(g, spec or self._s)
 
-    # ------------------------------------------------------------------
-    # DSL sugar
-    # ------------------------------------------------------------------
+    def _bind_template(self, tpl: Template) -> "Operation":
+        new_spec = replace(
+            self._s,
+            id=self._g.new_id(f"{self._s.id}_tpl"),
+            bound_template=tpl,
+            bound_args=(),  # guarantee mutual exclusion
+            bound_kwargs=MappingProxyType({}),
+        )
+        return self._clone(new_spec)
+
+    def _bind_constants(self, tpl: Template) -> "Operation":
+        new_spec = replace(
+            self._s,
+            id=self._g.new_id(f"{self._s.id}_const"),
+            bound_template=None,  # guarantee mutual exclusion
+            bound_args=tpl.args,
+            bound_kwargs=MappingProxyType(tpl.kwargs),
+        )
+        return self._clone(new_spec)
+
+    def _invoke_later(self, tpl: Template) -> "Operation":
+        invoked = copy.copy(self)
+        invoked._call_args = tpl.args  # type: ignore[attr-defined]
+        invoked._call_kwargs = tpl.kwargs  # type: ignore[attr-defined]
+        invoked._plan_cache = None
+        return invoked
+
     def __rshift__(self, other: "Operation[T, S, C]") -> "Operation[T, S, C]":
         """
         Wire the result of *this* operation into the next one and return
@@ -77,7 +105,7 @@ class Operation(Generic[T, S, C]):
             for edges in other._g._edges_from.values():
                 for e in edges:
                     self._g.connect(e.source, e.target)
-            other._g = self._g        # now both point to the same graph
+            other._g = self._g  # now both point to the same graph
 
         # ── 2. find the first input on `other` that can accept our output ─
         chosen_param: str | None = None
@@ -112,101 +140,25 @@ class Operation(Generic[T, S, C]):
                 HandleId(other._s.id, chosen_param),
             )
 
-        # return the tail so chaining continues
         return other
-    
-    # ------------------------------------------------------------------
-    # Binding / placeholders
-    # ------------------------------------------------------------------
+
     def __call__(self, *args: Any, **kwargs: Any) -> "Operation[T, S, C]":
-        # ---------- 1. placeholder-driven binding ----------------------
-        if any(_contains_ph(a) for a in args) or any(_contains_ph(v) for v in kwargs.values()):
-            return self._bind_with_placeholders(args, kwargs)          # <-- helper kept below
+        tpl = Template.from_call(args, kwargs)
 
-        # ---------- 2. constant pre-binding (only if signature accepts)-
-        try:
-            self._s.signature.bind_partial(*args, **kwargs)
-        except TypeError: # too many / invalid args
-            can_bind = False
-        else:
-            can_bind = True
+        # 1) deferred template bind   op(_, y=42)
+        if any(a is _ for a in tpl.args) or any(v is _ for v in tpl.kwargs.values()):
+            return self._bind_template(tpl)
 
-        if can_bind and (args or kwargs):
-            return self._bind_constants(args, kwargs)                  
+        # 2) eager constant bind      op(10, y=42)
+        if tpl.args or tpl.kwargs:
+            return self._bind_constants(tpl)
 
-        # ---------- 3. runtime invocation -----------------------------
-        if not args and not kwargs:        # nothing to do
-            return self
-
-        invoked = copy.copy(self)          # cheap shallow copy; graph/spec are shared
-        invoked._call_args: Tuple[Any, ...] = tuple(args) # type: ignore
-        invoked._call_kwargs: Dict[str, Any] = dict(kwargs) # type: ignore
-        invoked._plan_cache = None
-        return invoked
-
+        # 3) run-time invocation (no early binding)
+        return self._invoke_later(tpl)
 
     def __await__(self) -> Any:
         return self.execute().__await__()
-    
-    
-    # ------------------------------------------------------------------
-    # Execution
-    # ------------------------------------------------------------------
-    async def execute(self, *args: Any, **kwargs: Any):
-        """
-        Merge any args/kwargs stored by a preceding ``pipeline(*args, **kw)``
-        call with the args/kwargs supplied directly to ``execute``.
-        """
-        stored_args  = getattr(self, "_call_args", ())
-        stored_kwargs = getattr(self, "_call_kwargs", {})
 
-        merged_args  = (*stored_args, *args)
-        merged_kwargs = {**stored_kwargs, **kwargs}
-
-        key = (merged_args, tuple(sorted(merged_kwargs.items())))
-        if self._plan_cache is None or getattr(self, "_plan_key", None) != key:
-            self._plan_cache = self._g.compile(self._s.id, merged_args, merged_kwargs)
-            self._plan_key = key
-        return await _default_executor.run(self._plan_cache)
-
-    def _bind_with_placeholders(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> "Operation":
-        sig = self._s.signature
-        bound = sig.bind_partial(*args, **kwargs)
-        new_kwargs = dict(self._s.bound_kwargs)
-        new_args   = list(self._s.bound_args)
-        for name, val in bound.arguments.items():
-            idx = list(sig.parameters).index(name)
-            while len(new_args) <= idx:
-                new_args.append(None)
-            new_args[idx] = val
-            new_kwargs[name] = val
-        new_spec = OpSpec(
-            id=self._g.new_id(self._s.id + "_bind"),
-            func=self._s.func,
-            signature=self._s.signature,
-            requires_ctx=self._s.requires_ctx,
-            ctx_type=self._s.ctx_type,
-            bound_args=tuple(new_args),
-            bound_kwargs=MappingProxyType(new_kwargs),
-        )
-        g = OpGraph()
-        g.add_spec(new_spec)
-        return Operation(g, new_spec)
-
-    def _bind_constants(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> "Operation":
-        new_spec = OpSpec(
-            id=self._g.new_id(self._s.id + "_const"),
-            func=self._s.func,
-            signature=self._s.signature,
-            requires_ctx=self._s.requires_ctx,
-            ctx_type=self._s.ctx_type,
-            bound_args=args or self._s.bound_args,
-            bound_kwargs=MappingProxyType({**self._s.bound_kwargs, **kwargs}),
-        )
-        g = OpGraph()
-        g.add_spec(new_spec)
-        return Operation(g, new_spec)
-    
     def validate(self) -> None:
         """Ensure every required parameter in the upstream DAG is satisfied."""
         topo = self._g._upstream(self._s)
@@ -214,8 +166,10 @@ class Operation(Generic[T, S, C]):
             sig = spec.signature
             # collect all non-*args/**kwargs parameters
             param_names = [
-                name for name, param in sig.parameters.items()
-                if param.kind not in (
+                name
+                for name, param in sig.parameters.items()
+                if param.kind
+                not in (
                     inspect.Parameter.VAR_POSITIONAL,
                     inspect.Parameter.VAR_KEYWORD,
                 )
@@ -257,12 +211,24 @@ class Operation(Generic[T, S, C]):
                         f"Missing connection for required input '{pname}' on '{spec.id}'"
                     )
 
+    async def execute(self, *args: Any, **kwargs: Any):
+        """
+        Merge any args/kwargs stored by a preceding ``pipeline(*args, **kw)``
+        call with the args/kwargs supplied directly to ``execute``.
+        """
+        stored_args = getattr(self, "_call_args", ())
+        stored_kwargs = getattr(self, "_call_kwargs", {})
+
+        merged_args = (*stored_args, *args)
+        merged_kwargs = {**stored_kwargs, **kwargs}
+
+        key = (merged_args, tuple(sorted(merged_kwargs.items())))
+        if self._plan_cache is None or getattr(self, "_plan_key", None) != key:
+            self._plan_cache = self._g.compile(self._s.id, merged_args, merged_kwargs)
+            self._plan_key = key
+        return await _default_executor.run(self._plan_cache)
 
 
-    # expose for tests ---------------------------------------------------
-    def _spec(self) -> OpSpec:
-        return self._s
-    
 @overload
 def operation(
     func: Callable[P, R],
@@ -306,7 +272,6 @@ def operation(
     if func is None:
         return _lift
     return _lift(func)
-
 
 
 @operation
