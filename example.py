@@ -1,5 +1,5 @@
 if __name__ == "__main__":
-    from fp_ops.operator2 import operation
+    from fp_ops.operator import operation
     from fp_ops.placeholder import _
     import asyncio
 
@@ -30,6 +30,13 @@ if __name__ == "__main__":
     pipeline7 = add >> mul(_, 4)
 
     pipeline7 = add >> identity(_)
+
+    pipeline8 = add(1,2) >> add_one
+    pipeline9 = add(1,2) >> add_one(1)
+
+    # placeholders down the chain, they should be the result of the previous operation add_one
+    pipeline10 = add(1,2) >> add_one >> identity(_)
+    pipeline11 = add(1,2) >> add_one(1) >> identity(_)
 
     # Validation
     pipeline.validate()
@@ -75,6 +82,22 @@ if __name__ == "__main__":
         res = result7.default_value(None)
         assert res == 3, f"expect identity(1 + 2) = 3, got {res}"
 
+        result8 = await pipeline8.execute()
+        res = result8.default_value(None)
+        assert res == 4, f"expect add(1,2) + 1 = 4, got {res}"
+
+        result9 = await pipeline9.execute()
+        res = result9.default_value(None)
+        assert res == 2, f"expect 1 + 1, ignoring add(1,2), got {res}"
+
+        result10 = await pipeline10.execute()
+        res = result10.default_value(None)
+        assert res == 4, f"expect add(1,2) + 1 = 4, got {res}"
+
+        result11 = await pipeline11.execute()
+        res = result11.default_value(None)
+        assert res == 2, f"expect 1 + 1 = 2, ignoring add(1,2), got {res}"
+        
     print("--------------------------------")
     print("testing execution, binding, and placeholders")
     print("--------------------------------")
