@@ -34,7 +34,7 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-class Operation(Generic[S, C]):
+class Operation(Generic[T, S, C]):
 
     def __init__(self, graph: OpGraph, spec: OpSpec[S, C]):
         self._g = graph
@@ -42,25 +42,54 @@ class Operation(Generic[S, C]):
         graph.add_spec(spec)
         self._plan_cache: ExecutionPlan | None = None
 
+    def _clone(self) -> "Operation[T, S, C]":
+        """
+        Return an immutable clone of *this stage* together with a **copy of
+        the whole graph built so far**.  That lets us build new pipelines
+        without ever mutating the global `add`, `add_one`, … objects while
+        still keeping every edge that was already wired inside the current
+        expression.
+        """
+        g = OpGraph()
+        # copy every node & edge that currently exists
+        for sp in self._g._nodes.values():
+            g.add_spec(sp)
+        for edges in self._g._edges_from.values():
+            for e in edges:
+                g.connect(e.source, e.target)
+        return Operation(g, self._s)
+
     # ------------------------------------------------------------------
     # DSL sugar
     # ------------------------------------------------------------------
-    def __rshift__(self, other: "Operation") -> "Operation":
-        # merge graphs if different
+    def __rshift__(self, other: "Operation[T, S, C]") -> "Operation[T, S, C]":
+        """
+        Wire the result of *this* operation into the next one and return
+        the tail of the chain so that further “>>” continue left-to-right.
+        """
+        self = self._clone()
+        other = other._clone()
+        # ── 1. make sure both operations share the same OpGraph ─────────
         if self._g is not other._g:
+            # copy every spec & edge from the “other” graph into ours
             for sp in other._g._nodes.values():
                 self._g.add_spec(sp)
             for edges in other._g._edges_from.values():
                 for e in edges:
                     self._g.connect(e.source, e.target)
-            other._g = self._g  # type: ignore
+            other._g = self._g        # now both point to the same graph
 
-        # choose first *unbound* or *placeholder* param
+        # ── 2. find the first input on `other` that can accept our output ─
         chosen_param: str | None = None
-        params = other._s.params
-        for idx, pname in enumerate(params):
+        for idx, pname in enumerate(other._s.params):
             if pname == "context":
                 continue
+
+            # already wired?
+            if self._g._incoming_edges(HandleId(other._s.id, pname)):
+                continue
+
+            # already bound (constant or placeholder)?
             if pname in other._s.bound_kwargs:
                 if _contains_ph(other._s.bound_kwargs[pname]):
                     chosen_param = pname
@@ -71,15 +100,25 @@ class Operation(Generic[S, C]):
                     chosen_param = pname
                     break
                 continue
+
+            # free parameter – use it
             chosen_param = pname
             break
+
+        # ── 3. add the edge if we found a home for our result ───────────
         if chosen_param is not None:
-            self._g.connect(HandleId(self._s.id, "result"), HandleId(other._s.id, chosen_param))
+            self._g.connect(
+                HandleId(self._s.id, "result"),
+                HandleId(other._s.id, chosen_param),
+            )
+
+        # return the tail so chaining continues
         return other
+    
     # ------------------------------------------------------------------
     # Binding / placeholders
     # ------------------------------------------------------------------
-    def __call__(self, *args: Any, **kwargs: Any) -> "Operation":
+    def __call__(self, *args: Any, **kwargs: Any) -> "Operation[T, S, C]":
         # ---------- 1. placeholder-driven binding ----------------------
         if any(_contains_ph(a) for a in args) or any(_contains_ph(v) for v in kwargs.values()):
             return self._bind_with_placeholders(args, kwargs)          # <-- helper kept below
@@ -87,25 +126,29 @@ class Operation(Generic[S, C]):
         # ---------- 2. constant pre-binding (only if signature accepts)-
         try:
             self._s.signature.bind_partial(*args, **kwargs)
-        except TypeError:                                              # too many / invalid args
+        except TypeError: # too many / invalid args
             can_bind = False
         else:
             can_bind = True
 
         if can_bind and (args or kwargs):
-            return self._bind_constants(args, kwargs)                  # <-- helper kept below
+            return self._bind_constants(args, kwargs)                  
 
         # ---------- 3. runtime invocation -----------------------------
         if not args and not kwargs:        # nothing to do
             return self
 
         invoked = copy.copy(self)          # cheap shallow copy; graph/spec are shared
-        invoked._call_args: Tuple[Any, ...] = tuple(args)
-        invoked._call_kwargs: Dict[str, Any] = dict(kwargs)
+        invoked._call_args: Tuple[Any, ...] = tuple(args) # type: ignore
+        invoked._call_kwargs: Dict[str, Any] = dict(kwargs) # type: ignore
         invoked._plan_cache = None
-        # we purposely do *not* touch validate()/edges/build-plan logic
         return invoked
 
+
+    def __await__(self) -> Any:
+        return self.execute().__await__()
+    
+    
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
@@ -146,7 +189,9 @@ class Operation(Generic[S, C]):
             bound_args=tuple(new_args),
             bound_kwargs=MappingProxyType(new_kwargs),
         )
-        return Operation(self._g, new_spec)
+        g = OpGraph()
+        g.add_spec(new_spec)
+        return Operation(g, new_spec)
 
     def _bind_constants(self, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> "Operation":
         new_spec = OpSpec(
@@ -158,7 +203,9 @@ class Operation(Generic[S, C]):
             bound_args=args or self._s.bound_args,
             bound_kwargs=MappingProxyType({**self._s.bound_kwargs, **kwargs}),
         )
-        return Operation(self._g, new_spec)
+        g = OpGraph()
+        g.add_spec(new_spec)
+        return Operation(g, new_spec)
     
     def validate(self) -> None:
         """Ensure every required parameter in the upstream DAG is satisfied."""
