@@ -55,7 +55,6 @@ class Operation(Generic[T, S, C]):
         expression.
         """
         g = OpGraph()
-        # copy every node & edge that currently exists
         for sp in self._g._nodes.values():
             g.add_spec(sp)
         for edges in self._g._edges_from.values():
@@ -68,7 +67,7 @@ class Operation(Generic[T, S, C]):
             self._s,
             id=self._g.new_id(f"{self._s.id}_tpl"),
             bound_template=tpl,
-            bound_args=(),  # guarantee mutual exclusion
+            bound_args=(),
             bound_kwargs=MappingProxyType({}),
         )
         return self._clone(new_spec)
@@ -77,7 +76,7 @@ class Operation(Generic[T, S, C]):
         new_spec = replace(
             self._s,
             id=self._g.new_id(f"{self._s.id}_const"),
-            bound_template=None,  # guarantee mutual exclusion
+            bound_template=None,
             bound_args=tpl.args,
             bound_kwargs=MappingProxyType(tpl.kwargs),
         )
@@ -92,48 +91,60 @@ class Operation(Generic[T, S, C]):
 
     def __rshift__(self, other: "Operation[T, S, C]") -> "Operation[T, S, C]":
         """
-        Wire the result of *this* operation into the next one and return
-        the tail of the chain so that further “>>” continue left-to-right.
+        Connect the *result* of this Operation to an appropriate input of
+        the next Operation and return the *tail* (`other`) so that further
+        chaining continues left-to-right.
         """
-        self = self._clone()
+        self  = self._clone()
         other = other._clone()
-        # ── 1. make sure both operations share the same OpGraph ─────────
+
         if self._g is not other._g:
-            # copy every spec & edge from the “other” graph into ours
             for sp in other._g._nodes.values():
                 self._g.add_spec(sp)
             for edges in other._g._edges_from.values():
                 for e in edges:
                     self._g.connect(e.source, e.target)
-            other._g = self._g  # now both point to the same graph
+            other._g = self._g
 
-        # ── 2. find the first input on `other` that can accept our output ─
         chosen_param: str | None = None
+        tpl = other._s.bound_template
+
         for idx, pname in enumerate(other._s.params):
             if pname == "context":
                 continue
 
-            # already wired?
             if self._g._incoming_edges(HandleId(other._s.id, pname)):
                 continue
 
-            # already bound (constant or placeholder)?
-            if pname in other._s.bound_kwargs:
-                if _contains_ph(other._s.bound_kwargs[pname]):
-                    chosen_param = pname
-                    break
-                continue
-            if idx < len(other._s.bound_args):
-                if _contains_ph(other._s.bound_args[idx]):
-                    chosen_param = pname
-                    break
-                continue
+            if tpl is not None:
+                tpl_val: Any | None = None
+                if pname in tpl.kwargs:
+                    tpl_val = tpl.kwargs[pname]
+                elif idx < len(tpl.args):
+                    tpl_val = tpl.args[idx]
 
-            # free parameter – use it
+                if tpl_val is _:
+                    chosen_param = pname
+                    break
+                if tpl_val is not None:
+                    continue
+
+            if (
+                pname in other._s.bound_kwargs
+                and _contains_ph(other._s.bound_kwargs[pname])
+            ):
+                chosen_param = pname
+                break
+            if (
+                idx < len(other._s.bound_args)
+                and _contains_ph(other._s.bound_args[idx])
+            ):
+                chosen_param = pname
+                break
+
             chosen_param = pname
             break
 
-        # ── 3. add the edge if we found a home for our result ───────────
         if chosen_param is not None:
             self._g.connect(
                 HandleId(self._s.id, "result"),
@@ -145,71 +156,89 @@ class Operation(Generic[T, S, C]):
     def __call__(self, *args: Any, **kwargs: Any) -> "Operation[T, S, C]":
         tpl = Template.from_call(args, kwargs)
 
-        # 1) deferred template bind   op(_, y=42)
+        if self._s.bound_template or self._s.bound_args or self._s.bound_kwargs:
+            return self._invoke_later(tpl)
+
         if any(a is _ for a in tpl.args) or any(v is _ for v in tpl.kwargs.values()):
             return self._bind_template(tpl)
 
-        # 2) eager constant bind      op(10, y=42)
-        if tpl.args or tpl.kwargs:
+        sig_params = [
+            p for p in self._s.signature.parameters
+            if p not in ("self", "context")
+        ]
+        arg_count = len(tpl.args) + len(tpl.kwargs)
+
+        can_be_binding = (
+            arg_count > 0
+            and arg_count <= len(sig_params)
+            and all(k in sig_params for k in tpl.kwargs)
+        )
+
+        if can_be_binding:
             return self._bind_constants(tpl)
 
-        # 3) run-time invocation (no early binding)
         return self._invoke_later(tpl)
+
 
     def __await__(self) -> Any:
         return self.execute().__await__()
 
     def validate(self) -> None:
-        """Ensure every required parameter in the upstream DAG is satisfied."""
+        """
+        Walk the upstream DAG and raise if any *required* parameter is
+        neither:
+
+        • satisfied by a constant in `bound_args` / `bound_kwargs`
+        • supplied by a **Template** entry that is a constant (≠ Placeholder)
+        • wired from an upstream edge
+        • given a default value in the function signature
+        """
+        from fp_ops.placeholder import Placeholder
+
         topo = self._g._upstream(self._s)
+
         for spec in topo:
             sig = spec.signature
-            # collect all non-*args/**kwargs parameters
-            param_names = [
+            params = [
                 name
-                for name, param in sig.parameters.items()
-                if param.kind
+                for name, p in sig.parameters.items()
+                if p.kind
                 not in (
                     inspect.Parameter.VAR_POSITIONAL,
                     inspect.Parameter.VAR_KEYWORD,
                 )
             ]
 
-            # --- skip “root” operations (no incoming edges at all) ---
-            has_incoming = False
-            for pname in param_names:
-                if self._g._incoming_edges(HandleId(spec.id, pname)):
-                    has_incoming = True
-                    break
-            if not has_incoming:
+            if not any(
+                self._g._incoming_edges(HandleId(spec.id, p)) for p in params
+            ):
                 continue
 
-            # --- enforce that each parameter is satisfied downstream ---
-            for idx, pname in enumerate(param_names):
-                # already handled by a bound arg/kw?
-                if pname in spec.bound_kwargs:
+            tpl = spec.bound_template
+
+            for idx, pname in enumerate(params):
+                if pname in spec.bound_kwargs or idx < len(spec.bound_args):
                     continue
-                if idx < len(spec.bound_args):
-                    continue
-                # or by a default value?
+
+                if tpl is not None:
+                    if pname in tpl.kwargs:
+                        if not isinstance(tpl.kwargs[pname], Placeholder):
+                            continue
+                    elif idx < len(tpl.args):
+                        if not isinstance(tpl.args[idx], Placeholder):
+                            continue
+
                 if sig.parameters[pname].default is not inspect.Parameter.empty:
                     continue
 
-                # otherwise we need an incoming edge
-                target_h = HandleId(spec.id, pname)
-                satisfied = False
-                for edges in self._g._edges_from.values():
-                    for e in edges:
-                        if e.target == target_h:
-                            satisfied = True
-                            break
-                    if satisfied:
-                        break
+                target = HandleId(spec.id, pname)
+                if any(e.target == target for edges in self._g._edges_from.values() for e in edges):
+                    continue
 
-                if not satisfied:
-                    raise ValueError(
-                        f"Missing connection for required input '{pname}' on '{spec.id}'"
-                    )
+                raise ValueError(
+                    f"Missing connection for required input '{pname}' on '{spec.id}'"
+                )
+
 
     async def execute(self, *args: Any, **kwargs: Any):
         """
@@ -289,7 +318,6 @@ def constant(value: Any) -> Operation[Any, Any, None]:
     return Operation.unit(value)
 
 
-# Helper functions for safe awaiting
 async def safe_await(value: Any) -> Any:
     """Safely await a value, handling both awaitable and non-awaitable values."""
     if inspect.isawaitable(value):
