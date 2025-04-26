@@ -24,7 +24,6 @@ from typing import (
 )
 from types import MappingProxyType
 
-
 from dataclasses import dataclass, field
 
 from expression import Result
@@ -35,14 +34,12 @@ from .context import BaseContext
 if TYPE_CHECKING:
     from .operator import Operation
 
-
-T = TypeVar("T")  # type of the input
-S = TypeVar("S")  # type of the output
-R = TypeVar("R")  # type of the result
-E = TypeVar("E", bound=Exception)  # type of the error
-C = TypeVar("C", bound=Optional[BaseContext])  # type of the context
-P = ParamSpec("P")  # Captures all parameter types
-
+T = TypeVar("T")
+S = TypeVar("S")
+R = TypeVar("R")
+E = TypeVar("E", bound=Exception)
+C = TypeVar("C", bound=Optional[BaseContext])
+P = ParamSpec("P")
 
 @dataclass(slots=True, frozen=True)
 class OpSpec(Generic[S, C]):
@@ -53,7 +50,7 @@ class OpSpec(Generic[S, C]):
     signature: inspect.Signature
     requires_ctx: bool
     ctx_type: Type[C] | None
-    bound_template: Template | None = None           
+    bound_template: Template | None = None
     bound_args: Tuple[Any, ...] = ()
     bound_kwargs: Mapping[str, Any] = MappingProxyType({})
 
@@ -74,12 +71,9 @@ class HandleType(Enum):
 class HandleId:
     node_id: str
     handle_type: HandleType
-    name: Optional[str] = None                     # param or special (result/error/context)
+    name: Optional[str] = None
     optional: bool = False
     default: Any = None
-
-
-
 
 @dataclass(slots=True, frozen=True)
 class Edge:
@@ -87,6 +81,3 @@ class Edge:
     target: HandleId
     type: EdgeType = EdgeType.RESULT
     transform: Callable[[Any], Awaitable[Any]] | None = None
-
-
-

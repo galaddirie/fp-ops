@@ -29,14 +29,11 @@ class Template:
     ``Placeholder`` objects.
     """
 
-    # ----- user-supplied data --------------------------------------------- #
-    args:  Sequence[Any]             = ()
-    kwargs: Mapping[str, Any]     = field(default_factory=dict) 
+    args:  Sequence[Any] = ()
+    kwargs: Mapping[str, Any] = field(default_factory=dict) 
 
-    # ----- pre-computed indices (added by __post_init__) ------------------ #
-    _pos_indices: Tuple[int, ...]    = field(init=False, repr=False)
-    _kw_keys:     Tuple[str, ...]    = field(init=False, repr=False)
-
+    _pos_indices: Tuple[int, ...] = field(init=False, repr=False)
+    _kw_keys: Tuple[str, ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
