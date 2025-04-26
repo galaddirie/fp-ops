@@ -4,9 +4,6 @@ from fp_ops.operator import Operation, identity
 from fp_ops.context import BaseContext
 from expression import Result
 
-# BUG: currently we do not bind the result of the previous operation to the next one, 
-# that might be desired but we need to also have the option to bind the result of the previous operation to the next one
-# maybe a bind=True argument?
 def sequence(*operations: Operation) -> Operation:
     """
     Combines multiple operations into a single operation that executes them in order.
@@ -29,9 +26,7 @@ def sequence(*operations: Operation) -> Operation:
         context = kwargs.get("context")
 
         for op in operations:
-            # Create a new kwargs for each operation
             op_kwargs = dict(kwargs)
-
             op_result = await op.execute(*args, **op_kwargs)
 
             if op_result.is_error():
@@ -39,7 +34,6 @@ def sequence(*operations: Operation) -> Operation:
 
             value = op_result.default_value(None)
 
-            # If the value is a context, update the context for subsequent operations
             if isinstance(value, BaseContext):
                 context = value
                 kwargs["context"] = context
@@ -48,7 +42,6 @@ def sequence(*operations: Operation) -> Operation:
 
         return Result.Ok(results)
 
-    # Find the most specific context type among all operations
     context_type = None
     for op in operations:
         if op.context_type is not None:
@@ -74,7 +67,6 @@ def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
         if not steps:
             return Result.Ok(None)
 
-        # Handle first step
         first_step = steps[0]
         if not isinstance(first_step, Operation):
             if callable(first_step):
@@ -88,7 +80,6 @@ def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
             else:
                 return Result.Error(TypeError(f"Step must be an Operation or callable, got {type(first_step)}"))
 
-        # Execute the first operation
         result = await first_step.execute(*args, **kwargs)
         if result.is_error() or len(steps) == 1:
             return result
@@ -97,14 +88,12 @@ def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
         context = kwargs.get("context")
         last_context_value = None
 
-        # If the value is a context, update the context but don't pass it as positional arg
         if isinstance(value, BaseContext):
             context = value
             kwargs["context"] = context
             last_context_value = value
-            value = None  # Don't pass context as positional arg to next op
+            value = None
 
-        # Process remaining steps
         for step in steps[1:]:
             if isinstance(step, Operation):
                 next_op = step
@@ -118,7 +107,6 @@ def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
             else:
                 return Result.Error(TypeError(f"Step must be an Operation or callable, got {type(step)}"))
 
-            # Execute the next operation
             if next_op.is_bound:
                 result = await next_op.execute(**kwargs)
             else:
@@ -129,23 +117,19 @@ def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
 
             value = result.default_value(None)
             
-            # Update context if value is a context
             if isinstance(value, BaseContext):
                 context = value
                 kwargs["context"] = context
                 last_context_value = value
-                value = None  # Don't pass context as positional arg to next op
+                value = None
 
-        # If the last operation returned a context, return that as the result
         if last_context_value is not None and isinstance(value, BaseContext):
             return Result.Ok(value)
-        # If any operation in the chain returned a context (not just the last one)
         elif last_context_value is not None:
             return Result.Ok(last_context_value)
         else:
             return Result.Ok(value)
 
-    # Determine context type - use the most specific among all operations
     context_type = None
     for step in steps:
         if isinstance(step, Operation) and step.context_type is not None:
@@ -165,7 +149,6 @@ def compose(*operations: Operation) -> Operation:
     if len(operations) == 1:
         return operations[0]
     
-    # Use the >> operator to compose operations from right to left
     result = operations[-1]
     for op in reversed(operations[:-1]):
         result = op >> result
@@ -181,29 +164,22 @@ def parallel(*operations: Operation) -> Operation:
         if not operations:
             return Result.Ok(())
         
-        # Extract context from kwargs if available
         context = kwargs.get("context")
         
-        # Create tasks for each operation
         tasks = []
         for op in operations:
-            # Create separate kwargs for each operation
             op_kwargs = dict(kwargs)
             tasks.append(op.execute(*args, **op_kwargs))
             
-        # Wait for all tasks to complete
         results = await asyncio.gather(*tasks)
         
-        # Check if any operation resulted in an error
         for result in results:
             if result.is_error():
                 return result
         
-        # Collect values from all results
         values = tuple(result.default_value(None) for result in results)
         return Result.Ok(values)
     
-    # Use the most specific context type among all operations
     context_type = None
     for op in operations:
         if op.context_type is not None:
@@ -226,7 +202,6 @@ def fallback(*operations: Operation) -> Operation:
         last_error = None
         
         for op in operations:
-            # Create separate kwargs for each operation
             op_kwargs = dict(kwargs)
             result = await op.execute(*args, **op_kwargs)
             
@@ -235,10 +210,8 @@ def fallback(*operations: Operation) -> Operation:
             
             last_error = result.error
         
-        # If all operations failed, return the last error
         return Result.Error(last_error or Exception("All operations failed"))
     
-    # Use the most specific context type among all operations
     context_type = None
     for op in operations:
         if op.context_type is not None:
@@ -292,27 +265,22 @@ def reduce(operation: Operation, func: Callable[[Any, Any], Any]) -> Operation:
     
     return Operation(reduced, context_type=operation.context_type)
 
-#TODO:  should zip be a tuple or a list?
 def zip(*operations: Operation) -> Operation:
     """
     Zip a list of operations.
     """
-    # Similar to parallel but with a different output structure
     async def zip_op(*args: Any, **kwargs: Any) -> Result[Tuple[Any, ...], Exception]:
         if not operations:
             return Result.Ok(())
         
-        # Run all operations in parallel
         results = await parallel(*operations).execute(*args, **kwargs)
         
         if results.is_error():
             return results
             
-        # Zip the results together
         values = results.default_value(())
         return Result.Ok(values)
     
-    # Use the most specific context type among all operations
     context_type = None
     for op in operations:
         if op.context_type is not None:
@@ -338,7 +306,6 @@ def flat_map(operation: Operation, func: Callable[[Any], List[Any]]) -> Operatio
         
         try:
             mapped_values = func(value)
-            # Flatten the list of lists
             flattened = [item for sublist in mapped_values for item in sublist]
             return Result.Ok(flattened)
         except Exception as e:
@@ -363,7 +330,6 @@ def group_by(operation: Operation, func: Callable[[Any], Any]) -> Operation:
             return Result.Error(TypeError(f"Expected a list or tuple, got {type(value)}"))
         
         try:
-            # Group items by the key function
             groups: Dict[Any, List[Any]] = {}
             for item in value:
                 key = func(item)
@@ -394,7 +360,6 @@ def partition(operation: Operation, func: Callable[[Any], bool]) -> Operation:
             return Result.Error(TypeError(f"Expected a list or tuple, got {type(value)}"))
         
         try:
-            # Partition items based on the predicate
             truthy = []
             falsy = []
             
@@ -476,20 +441,15 @@ async def gather_operations(
     """
     tasks = []
 
-    # Ensure context is passed to all operations
     execution_kwargs = kwargs or {}
     context = execution_kwargs.get("context")
 
     for op in operations:
-        # Create a separate kwargs dictionary for each operation
-        # to prevent potential interference between operations
         op_kwargs = dict(execution_kwargs)
 
         if args is not None or kwargs is not None:
-            # If args or kwargs are provided, create a new bound operation
             op = op(*args or [], **op_kwargs)
 
-        # Validate context if the operation has a specific context type
         if (
             context is not None
             and hasattr(op, "context_type")
@@ -497,7 +457,6 @@ async def gather_operations(
         ):
             try:
                 if not isinstance(context, op.context_type):
-                    # Try to convert context to the required type
                     if isinstance(context, dict):
                         op_kwargs["context"] = op.context_type(**context)
                     elif isinstance(context, BaseContext):
@@ -505,7 +464,6 @@ async def gather_operations(
                     else:
                         op_kwargs["context"] = op.context_type.model_validate(context)
             except Exception:
-                # If conversion fails, use the original context
                 pass
 
         tasks.append(op.execute(**op_kwargs))

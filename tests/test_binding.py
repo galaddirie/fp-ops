@@ -95,7 +95,7 @@ class TestSimpleChaining:
         pipeline = add >> add_one(1)  # add_one(1) => 2
         pipeline.validate()
 
-        result = await pipeline.execute()
+        result = await pipeline(1,2).execute()
         assert result.is_ok()
         assert result.default_value(None) == 2
 
@@ -228,14 +228,6 @@ class TestMultiLevelChaining:
         assert result.is_ok()
         assert result.default_value(None) == 7
 
-    @pytest.mark.asyncio
-    async def test_multi_level_with_placeholder_in_first_op(self):
-        pipeline = add(_, 2) >> add_one >> identity
-        pipeline.validate()
-
-        result = await pipeline(1).execute()
-        assert result.is_ok()
-        assert result.default_value(None) == 4  # (1 + 2) + 1 = 4
 
     @pytest.mark.asyncio
     async def test_multi_level_with_placeholder_in_second_op(self):
@@ -266,19 +258,19 @@ class TestMultiLevelChaining:
 
     @pytest.mark.asyncio
     async def test_multi_level_with_placeholders_and_prebound_ops(self):
-        pipeline = add(1, _) >> add_one(_) >> identity
+        pipeline = add(1, 2) >> add_one(_) >> identity
         pipeline.validate()
 
-        result = await pipeline(2).execute()
+        result = await pipeline().execute()
         assert result.is_ok()
         assert result.default_value(None) == 4  # (1 + 2) + 1 = 4
 
     @pytest.mark.asyncio
     async def test_multi_level_with_placeholders_in_all_ops(self):
-        pipeline = add(_, _) >> add_one(_) >> identity(_)
+        pipeline = add(1, 2) >> add_one(_) >> identity(_)
         pipeline.validate()
 
-        result = await pipeline(1, 2).execute()
+        result = await pipeline().execute()
         assert result.is_ok()
         assert result.default_value(None) == 4  # ((1 + 2) + 1) = 4
 

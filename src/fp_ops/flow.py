@@ -24,28 +24,21 @@ def branch(
     Returns:
         An operation that conditionally executes one of two operations.
     """
-    # Check if condition is an Operation or was decorated with @operation
     is_operation = isinstance(condition, Operation)
     is_decorated = hasattr(condition, "requires_context") and callable(condition)
     
     async def branch_func(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
         try:
-            # Make a copy of kwargs to avoid modifying the original
             condition_kwargs = dict(kwargs)
-            
-            # Evaluate the condition - the key part is correctly executing Operations
             condition_value: bool = False
             
             if is_operation:
-                # If condition is an Operation, execute it
                 condition_op = cast(Operation, condition)
                 condition_result = await condition_op.execute(*args, **condition_kwargs)
                 if condition_result.is_error():
                     return condition_result
                 condition_value = condition_result.default_value(False)
             elif is_decorated:
-                # If condition was decorated with @operation, it returns an Operation when called
-                # We need to execute that Operation to get the boolean result
                 op = condition(*args, **condition_kwargs)
                 if isinstance(op, Operation):
                     result = await op.execute()
@@ -53,18 +46,14 @@ def branch(
                         return result
                     condition_value = result.default_value(False)
                 else:
-                    # If it unexpectedly doesn't return an Operation, use the value directly
                     condition_value = bool(op)
             elif inspect.iscoroutinefunction(condition):
-                # For async functions, await them
                 condition_func = cast(Callable[..., bool], condition)
                 condition_value = await condition_func(*args, **condition_kwargs)  # type: ignore
             else:
-                # For regular functions, call directly
                 condition_func = cast(Callable[..., bool], condition)
                 condition_value = condition_func(*args, **condition_kwargs)
             
-            # Choose the appropriate branch based on the condition result
             if condition_value:
                 return await true_operation.execute(*args, **kwargs)
             else:
@@ -73,22 +62,18 @@ def branch(
         except Exception as e:
             return Result.Error(e)
 
-    # Determine the most specific context type for the branch operation
     context_type = None
     
-    # Check condition context type
     condition_context_type = getattr(condition, "context_type", None)
     if condition_context_type is not None:
         context_type = condition_context_type
     
-    # Check true_operation context type
     if true_operation.context_type is not None:
         if context_type is None:
             context_type = true_operation.context_type
         elif issubclass(true_operation.context_type, context_type):
             context_type = true_operation.context_type
     
-    # Check false_operation context type
     if false_operation.context_type is not None:
         if context_type is None:
             context_type = false_operation.context_type
@@ -119,12 +104,10 @@ def attempt(
     """
 
     async def attempt_func(*args: Any, **kwargs: Any) -> Result[S, Exception]:
-        # Validate context if required
         if context and context_type is not None:
             ctx = kwargs.get("context")
             if ctx is not None and not isinstance(ctx, context_type):
                 try:
-                    # Try to convert to the required context type
                     if isinstance(ctx, dict):
                         ctx = context_type(**ctx)
                     elif isinstance(ctx, BaseContext):
@@ -140,27 +123,18 @@ def attempt(
         
         try:
             if is_async:
-                # For async functions, await the coroutine to get the actual result
                 result = await risky_operation(*args, **kwargs)  # type: ignore
-                
-                # If the function already returns a Result, use it directly
                 if isinstance(result, Result):
                     return cast(Result[S, Exception], result)
-                # Otherwise, wrap the value in Result.Ok
                 return Result.Ok(result)
             else:
-                # For sync functions, run in a thread and handle the result
                 result = await asyncio.to_thread(lambda: risky_operation(*args, **kwargs))
-                
-                # If the function already returns a Result, use it directly
                 if isinstance(result, Result):
                     return cast(Result[S, Exception], result)
-                # Otherwise, wrap the value in Result.Ok
                 return Result.Ok(result)
         except Exception as e:
             return Result.Error(e)
 
-    # Mark the wrapped function with context requirements
     setattr(attempt_func, "requires_context", context)
     setattr(attempt_func, "context_type", context_type)
 
@@ -182,8 +156,6 @@ def fail(
     """
 
     async def fail_func(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
-        # Even though this operation always fails, we should specify the context type
-        # for proper type checking in the operation chain
         if isinstance(error, str):
             return Result.Error(Exception(error))
         return Result.Error(error)
@@ -228,7 +200,6 @@ def tap(
     Returns:
         An operation that applies the side effect without changing the value.
     """
-    # Mark the side_effect function with context requirements if needed
     if callable(side_effect) and not hasattr(side_effect, "requires_context"):
         setattr(side_effect, "requires_context", context)
         setattr(side_effect, "context_type", context_type)
@@ -258,36 +229,26 @@ def loop_until(
     Returns:
         An operation that loops until the condition is met.
     """
-    # Determine if the condition function requires context
     condition_requires_context = getattr(condition, "requires_context", context)
     
     async def loop_func(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
-        # Preserve context when looping
         ctx = kwargs.get("context")
         iteration_value = args[0] if args else None
         
         try:
             for i in range(max_iterations):
-                # Pass the latest value to the condition
                 condition_kwargs = dict(kwargs)
-                
-                # Always use the current iteration_value, regardless of context requirement
                 condition_args = (iteration_value,) + args[1:] if args and len(args) > 1 else (iteration_value,)
-                
-                # Evaluate the condition
                 if inspect.iscoroutinefunction(condition):
                     should_exit = await condition(*condition_args, **condition_kwargs)
                 else:
                     should_exit = condition(*condition_args, **condition_kwargs)
 
                 if should_exit:
-                    # When condition is met, return the current value (before executing body again)
                     return Result.Ok(iteration_value)
                 
-                # Execute the body operation
                 body_kwargs = dict(kwargs)
-                body_args = condition_args  # Use the same args we passed to condition
-                
+                body_args = condition_args
                 result = await body.execute(*body_args, **body_kwargs)
                 
                 if result.is_error():
@@ -295,22 +256,18 @@ def loop_until(
                 
                 iteration_value = result.default_value(None)
                 
-                # If the result is a context, update the context for the next iteration
                 if isinstance(iteration_value, BaseContext):
                     ctx = iteration_value
                     kwargs["context"] = ctx
                 
-                # Add delay between iterations
                 if i < max_iterations - 1:
                     await asyncio.sleep(delay)
             
-            # If we reached the max iterations, return the last value
             return Result.Ok(iteration_value)
                 
         except Exception as e:
             return Result.Error(e)
     
-    # Determine the context type for the loop operation
     loop_context_type = context_type
     if body.context_type is not None:
         if loop_context_type is None:
@@ -355,7 +312,6 @@ def wait(
             
             await asyncio.sleep(delay)
         
-        # If we reached the timeout, return the last error or a timeout error
         if last_error:
             return Result.Error(last_error)
         else:
