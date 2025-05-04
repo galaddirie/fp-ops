@@ -24,7 +24,7 @@ from functools import wraps
 from dataclasses import replace
 
 from fp_ops.graph import OpGraph
-from fp_ops.primitives import HandleId, OpSpec
+from fp_ops.primitives import Port, OpSpec
 from fp_ops.execution import ExecutionPlan, _default_executor
 
 from fp_ops.placeholder import _, Template
@@ -39,6 +39,8 @@ C = TypeVar("C", bound=Optional[BaseContext])
 P = ParamSpec("P")
 R = TypeVar("R")
 
+OpOrCallable = Union["Operation", Callable[..., Any]]
+
 def _lift_function(fn: Callable[..., Any]) -> "Operation":
     """
     Take an arbitrary (sync-or-async) callable and turn it into an Operation node
@@ -52,32 +54,28 @@ def _lift_function(fn: Callable[..., Any]) -> "Operation":
             if is_async:
                 return await fn(x)
             return await asyncio.to_thread(fn, x)
-        except Exception as e:            # always wrap in Result to stay monadic
+        except Exception as e:  # always wrap in Result to stay monadic
             return Result.Error(e)
 
-    return operation(_wrapped)           # use the public decorator
+    return operation(_wrapped)  # use the public decorator
 
-def _merge_graphs(left: "Operation", right: "Operation") -> None:
-    """
-    Re-attach every node & edge from *right* into *left*'s graph, then make sure
-    both Operation instances point at the *same* OpGraph object.
-    """
-    if left._g is right._g:
-        return
 
-    for sp in right._g._nodes.values():
-        left._g.add_spec(sp)
-    for edges in right._g._edges_from.values():
-        for e in edges:
-            left._g.connect(e.source, e.target)
-    right._g = left._g                # important: share the same graph object
+def _ensure_operation(op: OpOrCallable) -> "Operation":
+    if isinstance(op, Operation):
+        return op
+    elif isinstance(op, Callable):
+        return _lift_function(op)
+    else:
+        raise TypeError(f"Expected Operation or Callable, got {type(op)}")
 
 class Operation(Generic[T, S, C]):
 
-    def __init__(self, graph: OpGraph, spec: OpSpec[S, C], context_type: Optional[Type[C]] = None):
+    def __init__(
+        self, graph: OpGraph, spec: OpSpec[S, C], context_type: Optional[Type[C]] = None
+    ):
         self._g = graph
         self._s = spec
-        self._context_type = context_type # deprecated
+        self._context_type = context_type  # deprecated but keep
         graph.add_spec(spec)
         self._plan_cache: ExecutionPlan | None = None
 
@@ -95,7 +93,7 @@ class Operation(Generic[T, S, C]):
         g = OpGraph()
         for sp in self._g._nodes.values():
             g.add_spec(sp)
-        for edges in self._g._edges_from.values():
+        for edges in self._g._out_edges.values():
             for e in edges:
                 g.connect(e.source, e.target)
         return Operation(g, spec or self._s)
@@ -126,21 +124,20 @@ class Operation(Generic[T, S, C]):
         invoked._call_kwargs = tpl.kwargs  # type: ignore[attr-defined]
         invoked._plan_cache = None
         return invoked
-    
-   
+
     def __rshift__(self, other: "Operation[T, S, C]") -> "Operation[T, S, C]":
         """
         Connect the *result* of this Operation to an appropriate input of
         the next Operation and return the *tail* (`other`) so that further
         chaining continues left-to-right.
         """
-        self  = self._clone()
-        other = other._clone()
+        self = self._clone()
+        other = _ensure_operation(other)._clone()
 
         if self._g is not other._g:
             for sp in other._g._nodes.values():
                 self._g.add_spec(sp)
-            for edges in other._g._edges_from.values():
+            for edges in other._g._out_edges.values():
                 for e in edges:
                     self._g.connect(e.source, e.target)
             other._g = self._g
@@ -152,7 +149,7 @@ class Operation(Generic[T, S, C]):
             if pname == "context":
                 continue
 
-            if self._g._incoming_edges(HandleId(other._s.id, pname)):
+            if self._g._incoming_edges(Port(other._s.id, pname)):
                 continue
 
             if tpl is not None:
@@ -168,15 +165,13 @@ class Operation(Generic[T, S, C]):
                 if tpl_val is not None:
                     continue
 
-            if (
-                pname in other._s.bound_kwargs
-                and _contains_ph(other._s.bound_kwargs[pname])
+            if pname in other._s.bound_kwargs and _contains_ph(
+                other._s.bound_kwargs[pname]
             ):
                 chosen_param = pname
                 break
-            if (
-                idx < len(other._s.bound_args)
-                and _contains_ph(other._s.bound_args[idx])
+            if idx < len(other._s.bound_args) and _contains_ph(
+                other._s.bound_args[idx]
             ):
                 chosen_param = pname
                 break
@@ -186,17 +181,17 @@ class Operation(Generic[T, S, C]):
 
         if chosen_param is not None:
             self._g.connect(
-                HandleId(self._s.id, "result"),
-                HandleId(other._s.id, chosen_param),
+                Port(self._s.id, "result"),
+                Port(other._s.id, chosen_param),
             )
 
         return other
 
     def __and__(self, other: "Operation") -> "Operation":
         """Run *both* branches and return a `(left, right)` tuple."""
-        self  = self._clone()
-        other = other._clone()
-        _merge_graphs(self, other)
+        self = self._clone()
+        other = _ensure_operation(other)._clone()
+        self._g.merge(other._g)
 
         async def _join(a, b):
             return (a, b)
@@ -211,10 +206,8 @@ class Operation(Generic[T, S, C]):
         self._g.add_spec(join_spec)
 
         # wire the two results into the new node
-        self._g.connect(HandleId(self._s.id,   "result"),
-                        HandleId(join_spec.id, "a"))
-        self._g.connect(HandleId(other._s.id,  "result"),
-                        HandleId(join_spec.id, "b"))
+        self._g.connect(Port(self._s.id, "result"), Port(join_spec.id, "a"))
+        self._g.connect(Port(other._s.id, "result"), Port(join_spec.id, "b"))
 
         return Operation(self._g, join_spec)
 
@@ -223,18 +216,16 @@ class Operation(Generic[T, S, C]):
         Try the *left* branch; if it returns a `Result.Error`, produce the right.
         (Both branches are evaluated **sequentially**, mirroring the old API.)
         """
-        self  = self._clone()
-        other = other._clone()
-        _merge_graphs(self, other)
+        self = self._clone()
+        other = _ensure_operation(other)._clone()
+
+        self._g.merge(other._g)
 
         async def _either(a: Result, b_thunk):
             if a.is_ok():
-                return a               # already a Result
-            return await b_thunk()     # lazily evaluate right branch
+                return a
+            return await b_thunk() 
 
-        # Wrap the right branch inside a zero-arg thunk so we can
-        # postpone its execution until the left fails.
-        # TODO: Why do we call .execute() here?
         async def _thunk_wrapper():
             return await other.execute()
 
@@ -247,16 +238,14 @@ class Operation(Generic[T, S, C]):
         )
         self._g.add_spec(either_spec)
 
-        self._g.connect(HandleId(self._s.id,   "result"),
-                        HandleId(either_spec.id, "a"))
-        # pass the *callable* (thunk) as a constant
+        self._g.connect(Port(self._s.id, "result"), Port(either_spec.id, "a"))
         either_spec = replace(
             either_spec,
             bound_kwargs=MappingProxyType({"b_thunk": _thunk_wrapper}),
         )
 
         return Operation(self._g, either_spec)
-    
+
     def __call__(self, *args: Any, **kwargs: Any) -> "Operation[T, S, C]":
         tpl = Template.from_call(args, kwargs)
 
@@ -267,8 +256,7 @@ class Operation(Generic[T, S, C]):
             return self._bind_template(tpl)
 
         sig_params = [
-            p for p in self._s.signature.parameters
-            if p not in ("self", "context")
+            p for p in self._s.signature.parameters if p not in ("self", "context")
         ]
         arg_count = len(tpl.args) + len(tpl.kwargs)
 
@@ -278,7 +266,16 @@ class Operation(Generic[T, S, C]):
             and all(k in sig_params for k in tpl.kwargs)
         )
 
-        if can_be_binding:
+        if can_be_binding and not any(
+            # positional
+            idx < len(tpl.args)
+            and self._g._incoming_edges(Port(self._s.id, pname))
+            or
+            # keyword
+            pname in tpl.kwargs
+            and self._g._incoming_edges(Port(self._s.id, pname))
+            for idx, pname in enumerate(sig_params)
+        ):
             return self._bind_constants(tpl)
 
         return self._invoke_later(tpl)
@@ -312,9 +309,7 @@ class Operation(Generic[T, S, C]):
                 )
             ]
 
-            if not any(
-                self._g._incoming_edges(HandleId(spec.id, p)) for p in params
-            ):
+            if not any(self._g._incoming_edges(Port(spec.id, p)) for p in params):
                 continue
 
             tpl = spec.bound_template
@@ -334,8 +329,12 @@ class Operation(Generic[T, S, C]):
                 if sig.parameters[pname].default is not inspect.Parameter.empty:
                     continue
 
-                target = HandleId(spec.id, pname)
-                if any(e.target == target for edges in self._g._edges_from.values() for e in edges):
+                target = Port(spec.id, pname)
+                if any(
+                    e.target == target
+                    for edges in self._g._out_edges.values()
+                    for e in edges
+                ):
                     continue
 
                 raise ValueError(
@@ -359,13 +358,16 @@ class Operation(Generic[T, S, C]):
             self._plan_key = key
         return await _default_executor.run(self._plan_cache)
 
-    # TODO: Why do we call .execute() here?
-    def bind(self, binder: Callable[[S], "Operation | Result | Awaitable | R"]) -> "Operation":
+    # TODO: breaks our lazy execution model
+    def bind(
+        self, binder: Callable[[S], "Operation | Result | Awaitable | R"]
+    ) -> "Operation":
         """
         `binder` may return:
             • Operation        → chained in the DAG
             • Result / Awaitable / plain value → lifted automatically
         """
+
         async def _bind(x):
             res = binder(x)
             if isinstance(res, Operation):
@@ -378,22 +380,28 @@ class Operation(Generic[T, S, C]):
             return res
 
         return self >> _lift_function(_bind)
-    
+
     def map(self, fn: Callable[[S], R]) -> "Operation":
         """Pure transformation of the previous value."""
         return self >> _lift_function(fn)
-    
-    def filter(self, pred: Callable[[S], bool],
-                     msg : str = "Value did not satisfy predicate") -> "Operation":
+
+    def filter(
+        self, pred: Callable[[S], bool], msg: str = "Value did not satisfy predicate"
+    ) -> "Operation":
         async def _flt(x):
-            ok = await pred(x) if inspect.iscoroutinefunction(pred) else await asyncio.to_thread(pred, x)
+            ok = (
+                await pred(x)
+                if inspect.iscoroutinefunction(pred)
+                else await asyncio.to_thread(pred, x)
+            )
             return x if ok else Result.Error(ValueError(msg))
+
         return self >> _lift_function(_flt)
-    
+
     def catch(self, handler: Callable[[Exception], S]) -> "Operation":
         async def _handle(res: Result):
             if res.is_ok():
-                return res             # already good
+                return res  # already good
             exc = res.error
             try:
                 val = handler(exc)
@@ -402,38 +410,45 @@ class Operation(Generic[T, S, C]):
                 return val
             except Exception as e:
                 return Result.Error(e)
+
         # `self` yields a Result object → map /unwrap/ with _handle
         return self.map(lambda r: r).bind(_handle)
-    
+
+    # TODO: breaks our lazy execution model
     def retry(self, attempts: int = 3, delay: float = 0.1) -> "Operation":
         async def _retry(x):
             last: Exception | None = None
             for _ in range(attempts):
-                res = await self.execute(x)   # run the inner op
+                res = await self.execute(x)  # run the inner op
                 if res.is_ok():
                     return res
                 last = res.error
                 await asyncio.sleep(delay)
             return Result.Error(last or Exception("retry exhausted"))
+
         return _lift_function(_retry)
-    
+
     def tap(self, side: Callable[[S], Any]) -> "Operation":
         async def _tap(x):
             try:
                 await safe_await(side(x))
             finally:
                 return x
+
         return self >> _lift_function(_tap)
-    
+
     @staticmethod
     def unit(value: T) -> "Operation[Any, T, None]":
-        async def _const(*_a, **_kw):        # noqa: D401
+        async def _const(*_a, **_kw):  # noqa: D401
             return value
+
         return operation(_const)
-    
+
     def default_value(self, default: S) -> "Operation":
         return self.catch(lambda _e: default)
-    
+
+
+    # TODO: breaks our lazy execution model
     @classmethod
     def sequence(cls, ops: Sequence["Operation"]) -> "Operation[Any, List[Any], None]":
         async def _seq(*args, **kw):
@@ -441,9 +456,10 @@ class Operation(Generic[T, S, C]):
             for op in ops:
                 out.append(await op.execute(*args, **kw))
             return out
+
         return operation(_seq)
 
-
+    # TODO: breaks our lazy execution model
     @classmethod
     def combine(cls, **named: "Operation") -> "Operation[Any, Dict[str, Any], None]":
         async def _cmb(*args, **kw):
@@ -451,9 +467,9 @@ class Operation(Generic[T, S, C]):
             for k, op in named.items():
                 res[k] = await op.execute(*args, **kw)
             return res
+
         return operation(_cmb)
 
-    
 
 @overload
 def operation(

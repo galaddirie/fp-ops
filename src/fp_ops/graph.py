@@ -1,8 +1,10 @@
 import itertools
 import inspect
+import uuid
+import collections
 from typing import Any, Dict, List, Tuple, MutableMapping, Callable
 
-from fp_ops.primitives import Edge, HandleId, OpSpec
+from fp_ops.primitives import Edge, Port, OpSpec
 from fp_ops.execution import Step, ExecutionPlan
 from fp_ops.placeholder import _
 from expression import Result
@@ -15,16 +17,20 @@ class OpGraph:
 
     def __init__(self):
         self._nodes: Dict[str, OpSpec] = {}
-        self._edges_from: Dict[HandleId, List[Edge]] = {}
+        self._graph_id = uuid.uuid4().hex[:8]
+        self._out_edges: Dict[str, List[Edge]] = collections.defaultdict(list)
+        self._in_edges:  Dict[str, List[Edge]] = collections.defaultdict(list)
 
     def add_spec(self, spec: OpSpec) -> None:
         self._nodes[spec.id] = spec
 
-    def connect(self, src: HandleId, tgt: HandleId) -> None:
-        self._edges_from.setdefault(src, []).append(Edge(src, tgt))
+    def connect(self, src: Port, tgt: Port) -> None:
+        e = Edge(src, tgt)
+        self._out_edges[src.node_id].append(e)
+        self._in_edges[tgt.node_id].append(e)
 
     def new_id(self, base: str) -> str:
-        return f"{base}_{OpGraph._id_counter()}"
+        return f"{base}:{self._graph_id}:{OpGraph._id_counter()}"
 
     def _upstream(self, start: OpSpec) -> List[OpSpec]:
         visited: set[str] = set()
@@ -35,7 +41,7 @@ class OpGraph:
                 return
             visited.add(spec.id)
             for handle_name in spec.params:
-                src_handle = HandleId(spec.id, handle_name)
+                src_handle = Port(spec.id, handle_name)
                 for e in self._incoming_edges(src_handle):
                     dfs(self._nodes[e.source.node_id])
             order.append(spec)
@@ -43,13 +49,22 @@ class OpGraph:
         dfs(start)
         return order
 
-    def _incoming_edges(self, target: HandleId) -> List[Edge]:
+    def _incoming_edges(self, target: Port) -> List[Edge]:
         res: List[Edge] = []
-        for edges in self._edges_from.values():
+        return [e for e in self._in_edges.get(target.node_id, ())
+                 if e.target == target]
+    def merge(self, other: "OpGraph") -> None:
+        """
+        Re-attach every node & edge from *other* into *this* graph.
+        """
+        if self is other:
+            return
+
+        for sp in other._nodes.values():
+            self.add_spec(sp)
+        for edges in other._out_edges.values():
             for e in edges:
-                if e.target == target:
-                    res.append(e)
-        return res
+                self.connect(e.source, e.target)
 
     def compile(
         self,
@@ -62,19 +77,21 @@ class OpGraph:
         order: List[OpSpec] = []
         visited: set[str] = set()
 
+        
+
         def dfs(spec: OpSpec) -> None:
             if spec.id in visited:
                 return
             visited.add(spec.id)
             for pname in spec.params:
-                for e in self._incoming_edges(HandleId(spec.id, pname)):
+                for e in self._incoming_edges(Port(spec.id, pname)):
                     dfs(self._nodes[e.source.node_id])
             order.append(spec)
 
         dfs(head)
 
-        def handle(spec: OpSpec, name: str = "result") -> HandleId:
-            return HandleId(spec.id, name)
+        def handle(spec: OpSpec, name: str = "result") -> Port:
+            return Port(spec.id, name)
 
         arg_cursor = list(ext_args)
         steps: List[Step] = []
@@ -89,10 +106,10 @@ class OpGraph:
             ]
 
             tpl = spec.bound_template
-            arg_getters: List[Callable[[MutableMapping[HandleId, Result]], Any]] = []
+            arg_getters: List[Callable[[MutableMapping[Port, Result]], Any]] = []
 
             for idx, pname in enumerate(param_list):
-                target_h = HandleId(spec.id, pname)
+                target_h = Port(spec.id, pname)
 
                 if tpl is not None:
                     if pname in tpl.kwargs:
@@ -177,5 +194,5 @@ class OpGraph:
 
         return ExecutionPlan(
             steps=steps,
-            final_handle=HandleId(head.id, "result"),
+            final_handle=Port(head.id, "result"),
         )

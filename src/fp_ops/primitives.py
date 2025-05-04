@@ -63,21 +63,21 @@ class EdgeType(Enum):
     ERROR = "error"
     CONTEXT = "context"
 
-class HandleType(Enum):
+class PortType(Enum):
     TARGET = "target"
     SOURCE = "source"
 
 @dataclass(slots=True, frozen=True)
-class HandleId:
+class Port:
     node_id: str
-    handle_type: HandleType
+    port_type: PortType
     name: Optional[str] = None
     optional: bool = False
     default: Any = None
 
 @dataclass(slots=True, frozen=True)
 class Edge:
-    source: HandleId
-    target: HandleId
+    source: Port
+    target: Port
     type: EdgeType = EdgeType.RESULT
     transform: Callable[[Any], Awaitable[Any]] | None = None

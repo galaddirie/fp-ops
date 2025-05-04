@@ -8,14 +8,7 @@ import pytest
 from fp_ops.operator import operation
 from fp_ops.placeholder import _
 
-
-@pytest.fixture
-def event_loop():
-    """Provide a fresh event-loop per test (pytest-asyncio legacy pattern)."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
+pytestmark = pytest.mark.asyncio(scope="function")
 
 @operation
 async def add(a: int, b: int) -> int:
@@ -68,13 +61,12 @@ class TestSimpleChaining:
 
         result = await pipeline.execute(a=1, b=2)
         assert result.is_ok()
-        # (1 + 2) + 1 = 4
         assert result.default_value(None) == 4
 
     
     @pytest.mark.asyncio
     async def test_chain_first_bound_only(self):
-        pipeline = add(1, 2) >> add_one  # (1+2)+1
+        pipeline = add(1, 2) >> add_one
         pipeline.validate()
 
         result = await pipeline.execute()
@@ -83,7 +75,7 @@ class TestSimpleChaining:
 
     @pytest.mark.asyncio
     async def test_chain_both_bound(self):
-        pipeline = add(1, 2) >> add_one(1)  # add_one(1) => 2
+        pipeline = add(1, 2) >> add_one(1)
         pipeline.validate()
 
         result = await pipeline.execute()
@@ -92,7 +84,7 @@ class TestSimpleChaining:
 
     @pytest.mark.asyncio
     async def test_chain_first_unbound_second_bound(self):
-        pipeline = add >> add_one(1)  # add_one(1) => 2
+        pipeline = add >> add_one(1)
         pipeline.validate()
 
         result = await pipeline(1,2).execute()
@@ -101,7 +93,6 @@ class TestSimpleChaining:
 
 
 class TestPlaceholderBinding:
-    """`_` placeholder behaviour"""
 
     @pytest.mark.asyncio
     async def test_placeholder_explicit_propagates_previous_result(self):
@@ -110,13 +101,12 @@ class TestPlaceholderBinding:
 
         result = await pipeline.execute(a=1, b=2)
         assert result.is_ok()
-        # (1 + 2) + 1 = 4
         assert result.default_value(None) == 4
 
 
     @pytest.mark.asyncio
     async def test_placeholder_first_pos(self):
-        pipeline = add >> mul(_, 3)  # (1+2) * 3
+        pipeline = add >> mul(_, 3)
         pipeline.validate()
 
         result = await pipeline.execute(a=1, b=2)
@@ -125,7 +115,7 @@ class TestPlaceholderBinding:
 
     @pytest.mark.asyncio
     async def test_placeholder_second_pos(self):
-        pipeline = add >> mul(3, _)  # 3 * (1+2)
+        pipeline = add >> mul(3, _)
         pipeline.validate()
 
         result = await pipeline.execute(a=1, b=2)
@@ -134,7 +124,7 @@ class TestPlaceholderBinding:
 
     @pytest.mark.asyncio
     async def test_placeholder_in_first_position_with_first_op_bound(self):
-        pipeline = add(1, 2) >> mul(_, 3)  # (1+2) * 3
+        pipeline = add(1, 2) >> mul(_, 3)
         pipeline.validate()
 
         result = await pipeline.execute()
@@ -143,7 +133,7 @@ class TestPlaceholderBinding:
 
     @pytest.mark.asyncio
     async def test_placeholder_in_second_position_with_first_op_bound(self):
-        pipeline = add(1, 2) >> mul(3, _)  # 3 * (1+2)
+        pipeline = add(1, 2) >> mul(3, _)
         pipeline.validate()
 
         result = await pipeline.execute()
@@ -152,7 +142,6 @@ class TestPlaceholderBinding:
 
 
 class TestMultiLevelChaining:
-    """Three-stage pipelines"""
 
     @pytest.mark.asyncio
     async def test_multi_level_with_no_binding_or_placeholders(self):
@@ -179,7 +168,7 @@ class TestMultiLevelChaining:
 
         result = await pipeline(1, 2).execute()
         assert result.is_ok()
-        assert result.default_value(None) == 2 # add_one(1) => 2
+        assert result.default_value(None) == 2
 
     @pytest.mark.asyncio
     async def test_multi_level_with_third_op_prebound(self):
@@ -197,7 +186,7 @@ class TestMultiLevelChaining:
 
         result = await pipeline(1, 2).execute()
         assert result.is_ok()
-        assert result.default_value(None) == 2 # add_one(1) => 2
+        assert result.default_value(None) == 2
 
     @pytest.mark.asyncio
     async def test_multi_level_with_first_op_prebound_and_third_op_prebound(self):
@@ -236,7 +225,7 @@ class TestMultiLevelChaining:
 
         result = await pipeline(1, 2).execute()
         assert result.is_ok()
-        assert result.default_value(None) == 4  # (1 + 2) + 1 = 4
+        assert result.default_value(None) == 4
 
     @pytest.mark.asyncio
     async def test_multi_level_with_placeholder_in_third_op(self):
@@ -245,7 +234,7 @@ class TestMultiLevelChaining:
 
         result = await pipeline(1, 2).execute()
         assert result.is_ok()
-        assert result.default_value(None) == 4  # ((1 + 2) + 1) = 4
+        assert result.default_value(None) == 4
 
     @pytest.mark.asyncio
     async def test_multi_level_with_multiple_placeholders(self):
@@ -254,7 +243,7 @@ class TestMultiLevelChaining:
 
         result = await pipeline(1, 2).execute()
         assert result.is_ok()
-        assert result.default_value(None) == 4  # (1 + 2) + 1 = 4
+        assert result.default_value(None) == 4
 
     @pytest.mark.asyncio
     async def test_multi_level_with_placeholders_and_prebound_ops(self):
@@ -263,7 +252,7 @@ class TestMultiLevelChaining:
 
         result = await pipeline().execute()
         assert result.is_ok()
-        assert result.default_value(None) == 4  # (1 + 2) + 1 = 4
+        assert result.default_value(None) == 4
 
     @pytest.mark.asyncio
     async def test_multi_level_with_placeholders_in_all_ops(self):
@@ -272,7 +261,7 @@ class TestMultiLevelChaining:
 
         result = await pipeline().execute()
         assert result.is_ok()
-        assert result.default_value(None) == 4  # ((1 + 2) + 1) = 4
+        assert result.default_value(None) == 4
 
     @pytest.mark.asyncio
     async def test_multi_level_with_placeholders_mixed_with_first_op_prebound(self):
@@ -281,7 +270,6 @@ class TestMultiLevelChaining:
 
         result = await pipeline.execute()
         assert result.is_ok()
-        # ((1+2)+1) = 4
         assert result.default_value(None) == 4
 
     @pytest.mark.asyncio
@@ -291,7 +279,6 @@ class TestMultiLevelChaining:
 
         result = await pipeline(1, 2).execute()
         assert result.is_ok()
-        # add_one(1) => 2
         assert result.default_value(None) == 2
 
     @pytest.mark.asyncio
@@ -303,11 +290,9 @@ class TestMultiLevelChaining:
 
         result = await pipeline.execute()
         assert result.is_ok()
-        # add_one(1) => 2
         assert result.default_value(None) == 2
 
 
-# TODO: Implement this test but not yet
 class TestMultiLevelChainingLarge:
     """
     Testing various large chained operations and how they bind.
@@ -316,12 +301,10 @@ class TestMultiLevelChainingLarge:
     ...
 
 
-# TODO: Implement this test
 class TestAssociativityAndOrderOfOperationsForBasicChains:
     ...
 
 class TestExecutionPatterns:
-    """Different ways of *running* a pipeline"""
 
     @pytest.mark.asyncio
     async def test_execute_method(self):
@@ -346,12 +329,10 @@ class TestExecutionPatterns:
         pipeline = add >> add_one
         pipeline.validate()
 
-        # positional + keyword
         result = await pipeline(1, b=2).execute()
         assert result.is_ok()
         assert result.default_value(None) == 4
 
-        # keyword after build
         result = await pipeline.execute(1, b=2)
         assert result.is_ok()
         assert result.default_value(None) == 4
@@ -388,10 +369,8 @@ class TestExecutionPatterns:
         pipeline = add(1, 2) >> add_one
         pipeline.validate()
 
-        # kwargs override only affect downstream, not already bound add(1,2)
         result = await pipeline(a=10, b=6)
         assert result.is_ok()
-        # add(1,2)=3; add_one(??) uses kwargs (a ignored, the first positional)
         assert result.default_value(None) == 4, f"we should ignore the params passed in if we have a prebound op, got {result.default_value(None)}"
 
     @pytest.mark.asyncio

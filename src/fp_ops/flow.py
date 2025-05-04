@@ -1,4 +1,3 @@
-# fp_ops/flow.py  ─────────────────────────────────────────────────────────────
 from __future__ import annotations
 import asyncio, inspect, time
 from typing import Any, Callable, Optional, Sequence, Tuple, Type, TypeVar, Union
@@ -7,28 +6,23 @@ from expression import Result
 
 from fp_ops.operator import Operation, operation
 from fp_ops.context import BaseContext
-from fp_ops.placeholder import _   # for users who like it in lambdas
+from fp_ops.placeholder import _
 
 S = TypeVar("S")
 T = TypeVar("T")
 
-# --------------------------------------------------------------------------- #
-#  fail – an Operation that *always* errors                                   #
-# --------------------------------------------------------------------------- #
 def fail(exc: Union[str, Exception, Type[Exception]]) -> Operation[Any, Any, None]:
     """
     `fail(ValueError("boom"))` -> op that *always* returns `Result.Error`.
     `fail(ValueError)`        -> same, but instantiates on each call.
     """
-
-    # normalise to an *instance* we can raise
     if inspect.isclass(exc) and issubclass(exc, Exception):
         def _make() -> Exception:                    # type: ignore[return-type]
             return exc()                             # type: ignore[misc]
     elif isinstance(exc, Exception):
         def _make() -> Exception:                    # type: ignore[return-type]
             return exc
-    else:                                            # string
+    else:
         def _make() -> Exception:                    # type: ignore[return-type]
             return Exception(exc)
 
@@ -38,10 +32,6 @@ def fail(exc: Union[str, Exception, Type[Exception]]) -> Operation[Any, Any, Non
 
     return _always_error
 
-
-# --------------------------------------------------------------------------- #
-#  attempt  – lift an *arbitrary* callable and capture exceptions             #
-# --------------------------------------------------------------------------- #
 def attempt(
     risky_fn: Callable[..., S],
     *,
@@ -55,18 +45,10 @@ def attempt(
 
     return operation(risky_fn, context=context, context_type=context_type)
 
-
-# --------------------------------------------------------------------------- #
-#  retry – convenience wrapper around the new .retry() method                 #
-# --------------------------------------------------------------------------- #
 def retry(op: Operation, *, max_retries: int = 3, delay: float = 0.1) -> Operation:
     """Just sugar for `op.retry(...)` to keep legacy code unchanged."""
     return op.retry(attempts=max_retries, delay=delay)
 
-
-# --------------------------------------------------------------------------- #
-#  tap – side-effect without changing the stream                              #
-# --------------------------------------------------------------------------- #
 def tap(
     op: Operation,
     side_effect: Callable[[Any], Any],
@@ -78,15 +60,10 @@ def tap(
     Attach `side_effect` to `op` and forward the original value.
     Works with sync / async side-effects.
     """
-    # advertise context requirements so the Operation can propagate it
     setattr(side_effect, "requires_context", context)
     setattr(side_effect, "context_type",   context_type)
     return op.tap(side_effect)
 
-
-# --------------------------------------------------------------------------- #
-#  branch – choose between two pipelines at runtime                           #
-# --------------------------------------------------------------------------- #
 def branch(
     condition: Union[Callable[..., bool], Operation[Any, bool, Any]],
     true_op: Operation,
@@ -96,24 +73,17 @@ def branch(
     Evaluate *condition* and run `true_op` or `false_op`.
     `condition` may be a plain callable or an Operation that returns bool.
     """
-
-    # make sure we are dealing with an Operation
     cond_op: Operation[Any, bool, Any]
     if isinstance(condition, Operation):
         cond_op = condition
     else:
         cond_op = operation(condition)
 
-    # binder chooses the next sub-pipeline lazily
     def _choose(flag: bool) -> Operation:
         return true_op if flag else false_op
 
     return cond_op.bind(_choose)
 
-
-# --------------------------------------------------------------------------- #
-#  loop_until – run `body` until predicate says stop                          #
-# --------------------------------------------------------------------------- #
 def loop_until(
     predicate: Callable[[T], bool],
     body: Operation[Any, T, Any],
@@ -141,10 +111,6 @@ def loop_until(
 
     return _looper
 
-
-# --------------------------------------------------------------------------- #
-#  wait – keep polling an operation until it succeeds or timeout              #
-# --------------------------------------------------------------------------- #
 def wait(
     op: Operation,
     *,
@@ -169,10 +135,6 @@ def wait(
 
     return _waiter
 
-
-# --------------------------------------------------------------------------- #
-#  helpers                                                                    #
-# --------------------------------------------------------------------------- #
 async def _safe_pred(pred: Callable[[T], bool], value: T) -> bool:
     """Await predicate if it's async, otherwise run it in a thread."""
     if inspect.iscoroutinefunction(pred):
