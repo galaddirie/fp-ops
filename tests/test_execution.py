@@ -7,7 +7,49 @@ from typing import Any, Callable, Dict, Tuple
 import pytest
 
 # The module under test -----------------------------------------------
-from fp_ops.execution import _merge_first_call, ExecutionPlan, Executor  # adjust import if the path differs
+from fp_ops.execution import _merge_first_call, ExecutionPlan, Executor, _has_nested_placeholder  # add the import
+from fp_ops.primitives import Placeholder, _
+
+
+# ---------------------------------------------------------------------
+# _has_nested_placeholder tests
+# ---------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("obj", "expected"),
+    [
+        # Simple placeholder
+        (_, True),
+        (Placeholder(), True),
+        
+        # Nested in dict
+        ({"key": _}, True),
+        ({"key": "value", "nested": {"deep": _}}, True),
+        ({"key": "value"}, False),
+        
+        # Nested in list
+        ([1, 2, _], True),
+        ([1, 2, [3, _]], True),
+        ([1, 2, 3], False),
+        
+        # Nested in tuple
+        ((1, 2, _), True),
+        ((1, 2, (3, _)), True),
+        ((1, 2, 3), False),
+        
+        # Mixed nesting
+        ({"key": [1, 2, _]}, True),
+        ([{"key": _}, 2, 3], True),
+        (({"key": [1, _, 3]},), True),
+        
+        # Non-container types
+        (123, False),
+        ("string", False),
+        (None, False),
+    ],
+)
+def test_has_nested_placeholder(obj: Any, expected: bool) -> None:
+    """Test that _has_nested_placeholder correctly detects Placeholder instances."""
+    assert _has_nested_placeholder(obj) is expected
 
 
 # ---------------------------------------------------------------------

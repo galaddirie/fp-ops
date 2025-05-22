@@ -204,7 +204,19 @@ class Operation(Generic[P, R]):
         if self._is_single_step():
             first_step_id = self._head_id
             spec = self._graph._nodes[first_step_id]
-            bound_tpl: Template[Any, Any] = Template(args=args, kwargs=kwargs)
+            
+            # Merge old + new arguments
+            prev_tpl = spec.template
+            
+            # positional: simply concatenate
+            merged_args = (*prev_tpl.args, *args) if args else prev_tpl.args
+            
+            # kwargs: runtime overrides template
+            merged_kwargs = (
+                {**prev_tpl.kwargs, **kwargs} if kwargs else dict(prev_tpl.kwargs)
+            )
+            
+            bound_tpl: Template = Template(args=merged_args, kwargs=merged_kwargs)
 
             # new id avoids duplicate node errors when the same op is reused
             new_spec = replace(spec, id=str(uuid.uuid4()), template=bound_tpl)
@@ -743,6 +755,21 @@ class Operation(Generic[P, R]):
 
         return Operation._from_function(_cont_wrapper)
 
+    def partial(self, *args: P.args, **kwargs: P.kwargs) -> "Operation[P, R]":
+        """Create a new operation with merged arguments.
+        
+        For single-step operations, this behaves like functools.partial,
+        preserving existing constants and overlaying new ones.
+        
+        Args:
+            *args: Positional arguments to append.
+            **kwargs: Keyword arguments to merge (new values override existing ones).
+            
+        Returns:
+            A new Operation with merged arguments.
+        """
+        return cast(Operation[P, R], self(*args, **kwargs))
+
 
 class _BoundCall(Generic[P, R]):
     """Stores runtime arguments until `.execute()` is invoked.
@@ -797,7 +824,7 @@ class _BoundCall(Generic[P, R]):
     # pipeline(1, 2) # this is wrong, it should be pipeline(1, 2).execute() OR pipeline.execute(1, 2)
     def __call__(
         self, *args: Any, **kwargs: Any
-    ) -> "_BoundCall[P, R] | Operation[P, R]":
+    ) -> Any:
         """Call the underlying pipeline with new arguments.
 
         Args:
