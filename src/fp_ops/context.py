@@ -21,11 +21,15 @@ class BaseContext(BaseModel):
         if not isinstance(other, BaseContext):
             raise TypeError(f"Cannot merge {type(other)} with {type(self)}")
         
-        result = self.model_copy()
+        result = self.model_copy(deep=True)
         
-        for field_name, field_value in other.model_dump().items():
+        # Create a deep copy of other's data to avoid modifying it
+        other_data = other.model_dump()
+        
+        for field_name, field_value in other_data.items():
             if field_name == 'metadata':
-                result.metadata.update(field_value)
+                # Create a new metadata dict instead of updating in place
+                result.metadata = {**result.metadata, **field_value}
             else:
                 current_value = getattr(result, field_name, None)
                 if (isinstance(current_value, BaseContext) and 
