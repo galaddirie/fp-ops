@@ -123,7 +123,7 @@ class Template(Generic[ResultType, ContextType]):
     def render(self, value: Any) -> tuple[Tuple[Any, ...], dict[str, Any]]:
         """Recursively replace "_" with *value*."""
         if not self.has_placeholders():
-            return self.args, dict(self.kwargs)
+            return tuple(self.args), dict(self.kwargs)
             
         def _replace(obj: Any) -> Any:
             if isinstance(obj, Placeholder):

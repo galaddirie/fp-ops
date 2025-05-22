@@ -1,139 +1,184 @@
 from __future__ import annotations
 import asyncio, inspect, time
-from typing import Any, Callable, Optional, Sequence, Tuple, Type, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Optional,
+    Sequence,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+    ParamSpec,
+    Awaitable,
+    Concatenate,
+    NoReturn,
+    cast,
+)
 
 from expression import Result
 
-from fp_ops.operator import Operation, operation
+from fp_ops.operator import Operation, operation, P, R, S, Q
 from fp_ops.context import BaseContext
 from fp_ops.placeholder import _
 
-S = TypeVar("S")
 T = TypeVar("T")
 
-def fail(exc: Union[str, Exception, Type[Exception]]) -> Operation[Any, Any, None]:
+def fail(exc: Union[str, Exception, Type[Exception]]) -> Operation[Any, None]:
     """
     `fail(ValueError("boom"))` -> op that *always* returns `Result.Error`.
     `fail(ValueError)`        -> same, but instantiates on each call.
     """
     if inspect.isclass(exc) and issubclass(exc, Exception):
-        def _make() -> Exception:                    # type: ignore[return-type]
-            return exc()                             # type: ignore[misc]
+        def _make() -> Exception:
+            return exc()
     elif isinstance(exc, Exception):
-        def _make() -> Exception:                    # type: ignore[return-type]
+        def _make() -> Exception:
             return exc
     else:
-        def _make() -> Exception:                    # type: ignore[return-type]
+        def _make() -> Exception:
             return Exception(exc)
 
     @operation
-    async def _always_error(*_a, **_kw):
+    async def _always_error(*_a: Any, **_kw: Any) -> NoReturn:
         raise _make()
 
-    return _always_error
+    # Statically we advertise "returns None" to callers even though it
+    # actually never returns.
+    return cast(Operation[Any, None], _always_error)
 
 def attempt(
-    risky_fn: Callable[..., S],
+    risky_fn: Callable[P, Awaitable[S]] | Callable[P, S],
     *,
     context: bool = False,
     context_type: Type[BaseContext] | None = None,
-) -> Operation[Any, S, None]:
+) -> Operation[P, S]:
     """
-    Like the old helper: make an Operation out of **any** sync/async callable
-    and turn raised exceptions into `Result.Error`.
+    Wrap any synchronous or asynchronous callable as an Operation that
+    automatically catches exceptions and returns them as `Result.Error`.
+
+    This is a convenience for quickly making any function "safe" in the
+    functional pipeline, so that exceptions are not raised but instead
+    are captured as error results.
+
+    Args:
+        risky_fn: The function to wrap. Can be sync or async.
+        context: If True, the operation will expect and pass a context argument.
+        context_type: The type of context to expect (if any).
+
+    Returns:
+        Operation[P, S]: An Operation that returns Result.Ok on success,
+        or Result.Error if the function raises an exception.
+
+    Example:
+        >>> @attempt
+        ... async def might_fail(x: int) -> int:
+        ...     if x < 0:
+        ...         raise ValueError("Negative!")
+        ...     return x * 2
+        >>> await might_fail(2)
+        Result.Ok(4)
+        >>> await might_fail(-1)
+        Result.Error(ValueError("Negative!"))
     """
 
-    return operation(risky_fn, context=context, context_type=context_type)
 
-def retry(op: Operation, *, max_retries: int = 3, delay: float = 0.1, backoff: float = 1.0) -> Operation:
-    """Just sugar for `op.retry(...)` to keep legacy code unchanged."""
+    if context or context_type:
+        return cast(Operation[P, S],
+                    operation(context=context, context_type=context_type)(risky_fn))
+    # fast-path no context awareness requested
+    return operation(risky_fn)
+
+def retry(op: Operation[P, R], *, max_retries: int = 3, delay: float = 0.1, backoff: float = 1.0) -> Operation[P, R]:
+    """
+    Retry the operation a specified number of times on failure.
+
+    Args:
+        attempts: Maximum number of attempts.
+        delay: Initial delay between attempts in seconds.
+        backoff: Multiplier for the delay after each retry.
+
+    Returns:
+        A new Operation that implements retry logic.
+        """
     return op.retry(attempts=max_retries, delay=delay, backoff=backoff)
 
 def tap(
-    op: Operation,
-    side_effect: Callable[[Any], Any],
-    *,
-    context: bool = False,
-    context_type: Type[BaseContext] | None = None,
-) -> Operation:
+    op: Operation[P, R],
+    side_effect: Callable[..., Any],
+) -> Operation[P, R]:
     """
     Attach `side_effect` to `op` and forward the original value.
     Works with sync / async side-effects.
     """
-    async def _tap_wrapper(x, *, context=None):
-        try:
-            maybe = (side_effect(x, context=context)            # ctx injected if declared
-                     if context
-                     else side_effect(x))
-            if inspect.isawaitable(maybe):
-                await maybe
-        except Exception:
-            pass          # side-effect exceptions are ignored
-        return x
-
-    return op >> Operation._from_function(
-        _tap_wrapper,
-        require_ctx=context,
-        ctx_type=context_type,
-    )
+    return op.tap(side_effect)
 
 def branch(
-    condition: Union[Callable[..., bool], Operation[Any, bool, Any]],
-    true_op: Operation,
-    false_op: Operation,
-) -> Operation[Any, Any, Any]:
+    condition: Union[Callable[[R], bool], Operation[P, bool]],
+    true_op: Operation[Concatenate[R, Q], S],
+    false_op: Operation[Concatenate[R, Q], S],
+) -> Operation[P, S]:
     """
     Evaluate *condition* and run `true_op` or `false_op`.
     `condition` may be a plain callable or an Operation that returns bool.
     """
     _UNSET = object()
-    cond_op = condition if isinstance(condition, Operation) else operation(condition)
+    cond_op: Operation[Any, bool] = (
+        condition  # already an Operation
+        if isinstance(condition, Operation)
+        else operation(cast(Callable[..., bool], condition))
+    )
 
-    async def _branch(value=_UNSET, *args, **kwargs):
+    async def _branch(value: Any = _UNSET, *args: Any, **kwargs: Any) -> S:
         has_val = value is not _UNSET
-        # --- evaluate condition -------------------------------------------
+        
         if isinstance(condition, Operation):
-            res = await (
+            cond_res: Result[bool, Exception] = await (
                 cond_op.execute(value, **kwargs) if has_val and not cond_op.is_bound
                 else cond_op.execute(**kwargs)
             )
-            if res.is_error():
-                raise res.error
-            flag = res.default_value(False)
-        else:                                           # plain callable
+            if cond_res.is_error():
+                raise cond_res.error
+            flag: bool = cond_res.default_value(False)
+        else:
             try:
-                out = (
+                maybe_awaitable = (
                     condition(value, **kwargs) if has_val
-                    else condition(**kwargs)
-                )        # may be async
-                flag = await out if inspect.isawaitable(out) else out
+                    else condition(*args, **kwargs)
+                )
+                flag = await maybe_awaitable if inspect.isawaitable(maybe_awaitable) else bool(maybe_awaitable)
             except Exception as exc:
                 raise exc
 
         chosen = true_op if flag else false_op
-        return await (
-            chosen.execute(value, **kwargs) if has_val and not chosen.is_bound
-            else chosen.execute(**kwargs)
+
+        branch_res: Result[S, Exception] = await (
+            chosen.execute(value, *args, **kwargs) if has_val and not chosen.is_bound
+            else chosen.execute(*args, **kwargs)
         )
 
-    # ---- context metadata (highest-order wins) ----------------------------
+        if branch_res.is_error():
+            raise branch_res.error
+
+        return branch_res.default_value(cast(Any, None))
+
     ctx_type = next((op.context_type for op in (cond_op, true_op, false_op) if op.context_type), None)
     return Operation._from_function(_branch,
                                     require_ctx=ctx_type is not None,
                                     ctx_type=ctx_type)
 
 def loop_until(
-    predicate: Callable[..., bool],
-    body: Operation[Any, T, Any],
+    predicate: Callable[[T], bool],
+    body: Operation[Concatenate[T, P], T],
     *,
     max_iterations: int = 10,
     delay: float = 0.1,
     context: bool = False,
     context_type: Type[BaseContext] | None = None,
-) -> Operation[Any, T, Any]:
+) -> Operation[Concatenate[T, P], T]:
     """Repeat *body* until *predicate* is satisfied or the iteration limit is hit."""
 
-    async def _eval_pred(val, *, ctx):
+    async def _eval_pred(val: T, *, ctx: BaseContext | None) -> bool:
         if isinstance(predicate, Operation):
             res = await (predicate.execute(val, context=ctx) if not predicate.is_bound
                          else predicate.execute(context=ctx))
@@ -141,13 +186,17 @@ def loop_until(
                 raise res.error
             return res.default_value(False)
 
-        out = (predicate(val, context=ctx)                    # may or may not want ctx
-               if getattr(predicate, "requires_context", False)
-               else predicate(val))
+        out = (
+            cast(Any, predicate)(val, context=ctx)            # want ctx
+            if getattr(predicate, "requires_context", False)
+            else predicate(val)
+        )
         return await out if inspect.isawaitable(out) else out
 
-    async def _looper(current, *extra_args, **extra_kw):
-        ctx = extra_kw.get("context")
+    async def _looper(
+        current: T, *extra_args: P.args, **extra_kw: P.kwargs
+    ) -> T:
+        ctx = cast(BaseContext | None, extra_kw.get("context"))
         for _ in range(max_iterations):
             if await _eval_pred(current, ctx=ctx):
                 return current
@@ -160,38 +209,41 @@ def loop_until(
                 await asyncio.sleep(delay)
         return current
 
-    # Prefer an explicit context_type argument, otherwise inherit
     ctx_t = context_type or body.context_type
-    return Operation._from_function(_looper,
-                                    require_ctx=context or (ctx_t is not None),
-                                    ctx_type=ctx_t)
+    return Operation._from_function(
+        cast(Callable[..., Awaitable[T]], _looper),
+        require_ctx=context or (ctx_t is not None),
+        ctx_type=ctx_t)
 
 def wait(
-    op: Operation,
+    op: Operation[P, R],
     *,
     timeout: float = 10.0,
     delay: float = 0.1,
-) -> Operation:
+) -> Operation[P, R]:
     """
     Execute `op` repeatedly until it returns `Result.Ok` or the timeout expires.
     """
 
-    @operation
-    async def _waiter(*args, **kw):
+    async def _waiter(*args: P.args, **kw: P.kwargs) -> R:          # helper
         start = time.perf_counter()
         last_err: Exception | None = None
         while time.perf_counter() - start < timeout:
             res = await op.execute(*args, **kw)
             if res.is_ok():
-                return res.default_value(None)
+                return cast(R, res.default_value(cast(Any, None)))
             last_err = res.error
             await asyncio.sleep(delay)
         raise last_err or TimeoutError(f"wait(): timed-out after {timeout}s")
 
-    return _waiter
+    return Operation._from_function(
+        cast(Callable[..., Awaitable[R]], _waiter)
+    )
+Predicate = Callable[[T], bool] | Callable[[T], Awaitable[bool]]
 
-async def _safe_pred(pred: Callable[[T], bool], value: T) -> bool:
-    """Await predicate if it's async, otherwise run it in a thread."""
+async def _safe_pred(pred: Predicate, value: T) -> bool:
+    """Await predicate if it's async; otherwise run it in a thread."""
     if inspect.iscoroutinefunction(pred):
-        return await pred(value)
-    return await asyncio.to_thread(pred, value)
+        # mypy still sees Any here, so cast once after awaiting
+        return cast(bool, await pred(value))
+    return cast(bool, await asyncio.to_thread(pred, value))

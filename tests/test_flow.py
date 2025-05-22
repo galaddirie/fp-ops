@@ -293,12 +293,31 @@ async def test_tap_with_context():
     @operation
     def base_func(x, context=None):
         return x
-    tap_op = tap(base_func, context_side_effect, context=True, context_type=TestContext)
+    tap_op = tap(base_func, context_side_effect)
     result = await tap_op.execute(42, context=context)
     await asyncio.sleep(0.05)
     assert result.is_ok()
     assert result.default_value(None) == 42
     assert tap_result == "42_test"
+
+async def test_tap_propagates_context():
+    class Ctx(BaseContext):
+        value: str = "v"
+
+    tap_called = False
+
+    def side(x, context=None):
+        nonlocal tap_called
+        tap_called = context.value == "v"
+
+    @operation
+    def id_(x, context=None):       # noqa: ANN001
+        return x
+
+    result = await tap(id_, side).execute(1, context=Ctx())
+    assert result.default_value(None) == 1
+    assert tap_called
+
 
 @pytest.mark.asyncio
 async def test_loop_until_condition_met():

@@ -1,10 +1,15 @@
 import asyncio
-from typing import Any, List, Union, Callable, Tuple, Dict
-from fp_ops.operator import Operation, identity, _ensure_async
+from typing import Any, List, Union, Callable, Tuple, Dict, TypeVar, Concatenate, cast
+
+from fp_ops.operator import Operation, identity, _ensure_async, P, R, S, Q
 from fp_ops.context import BaseContext
 from expression import Result
 
-def sequence(*operations: Operation) -> Operation:
+T = TypeVar("T")
+U = TypeVar("U")
+V = TypeVar("V")
+
+def sequence(*operations: Operation) -> Operation[P, List[Any]]:
     """
     Combines multiple operations into a single operation that executes them in order.
     Unlike 'compose', this function collects and returns ALL results as a Block.
@@ -21,7 +26,7 @@ def sequence(*operations: Operation) -> Operation:
     # result is a Block containing the results of op1, op2, and op3
     ```
     """
-    async def sequenced_op(*args: Any, **kwargs: Any) -> Result[List[Any], Exception]:
+    async def sequenced_op(*args: Any, **kwargs: Any) -> List[Any]:
         results = []
         context = kwargs.get("context")
 
@@ -30,9 +35,9 @@ def sequence(*operations: Operation) -> Operation:
             op_result = await op.execute(*args, **op_kwargs)
 
             if op_result.is_error():
-                return op_result
+                raise op_result.error
 
-            value = op_result.default_value(None)
+            value = op_result.default_value(cast(Any, None))
 
             if isinstance(value, BaseContext):
                 context = value
@@ -40,7 +45,7 @@ def sequence(*operations: Operation) -> Operation:
             else:
                 results.append(value)
 
-        return Result.Ok(results)
+        return results
 
     context_type = None
     for op in operations:
@@ -53,7 +58,7 @@ def sequence(*operations: Operation) -> Operation:
     return Operation._from_function(sequenced_op, ctx_type=context_type, require_ctx=context_type is not None)
 
 
-def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
+def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation[P, Any]:
     """
     Create a pipeline of operations where each step can be either an Operation or
     a function that takes the previous result and returns an Operation.
@@ -63,9 +68,9 @@ def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
     - For complex cases where you need to inspect values or decide which action to run next,
       use pipe() with lambda functions
     """
-    async def piped(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
+    async def piped(*args: Any, **kwargs: Any) -> Any:
         if not steps:
-            return Result.Ok(None)
+            return None
 
         first_step = steps[0]
         if not isinstance(first_step, Operation):
@@ -73,18 +78,21 @@ def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
                 try:
                     first_step = first_step(*args)
                 except Exception as e:
-                    return Result.Error(e)
+                    raise e
                 
                 if not isinstance(first_step, Operation):
-                    return Result.Error(TypeError(f"Step function must return an Operation, got {type(first_step)}"))
+                    raise TypeError(f"Step function must return an Operation, got {type(first_step)}")
             else:
-                return Result.Error(TypeError(f"Step must be an Operation or callable, got {type(first_step)}"))
+                raise TypeError(f"Step must be an Operation or callable, got {type(first_step)}")
 
         result = await first_step.execute(*args, **kwargs)
-        if result.is_error() or len(steps) == 1:
-            return result
+        if result.is_error():
+            raise result.error
+            
+        if len(steps) == 1:
+            return result.default_value(cast(Any, None))
 
-        value = result.default_value(None)
+        value: Any = result.default_value(cast(Any, None))
         context = kwargs.get("context")
         last_context_value = None
 
@@ -101,11 +109,11 @@ def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
                 try:
                     next_op = step(value)
                     if not isinstance(next_op, Operation):
-                        return Result.Error(TypeError(f"Step function must return an Operation, got {type(next_op)}"))
+                        raise TypeError(f"Step function must return an Operation, got {type(next_op)}")
                 except Exception as e:
-                    return Result.Error(e)
+                    raise e
             else:
-                return Result.Error(TypeError(f"Step must be an Operation or callable, got {type(step)}"))
+                raise TypeError(f"Step must be an Operation or callable, got {type(step)}")
 
             if next_op.is_bound:
                 result = await next_op.execute(**kwargs)
@@ -113,9 +121,9 @@ def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
                 result = await next_op.execute(value, **kwargs)
             
             if result.is_error():
-                return result
+                raise result.error
 
-            value = result.default_value(None)
+            value = result.default_value(cast(Any, None))
             
             if isinstance(value, BaseContext):
                 context = value
@@ -124,11 +132,11 @@ def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
                 value = None
 
         if last_context_value is not None and isinstance(value, BaseContext):
-            return Result.Ok(value)
+            return value
         elif last_context_value is not None:
-            return Result.Ok(last_context_value)
+            return last_context_value
         else:
-            return Result.Ok(value)
+            return value
 
     context_type = None
     for step in steps:
@@ -141,12 +149,13 @@ def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
     return Operation._from_function(piped, ctx_type=context_type, require_ctx=context_type is not None)
 
 
-def compose(*operations: Operation) -> Operation:
+def compose(*operations: Operation) -> Operation[P, R]:
     """
     Compose a list of operations into a single operation.
     """
     if not operations:
-        return identity
+        # identity is still an Operation; the cast quiets mypy
+        return cast(Operation[P, R], identity)
     
     if len(operations) == 1:
         return operations[0]
@@ -158,13 +167,13 @@ def compose(*operations: Operation) -> Operation:
     return result
 
 
-def parallel(*operations: Operation) -> Operation:
+def parallel(*operations: Operation) -> Operation[P, Tuple[Any, ...]]:
     """
     Run multiple operations concurrently and return when all are complete.
     """
-    async def parallel_op(*args: Any, **kwargs: Any) -> Result[Tuple[Any, ...], Exception]:
+    async def parallel_op(*args: Any, **kwargs: Any) -> Tuple[Any, ...]:
         if not operations:
-            return Result.Ok(())
+            return ()
         
         context = kwargs.get("context")
         
@@ -177,10 +186,10 @@ def parallel(*operations: Operation) -> Operation:
         
         for result in results:
             if result.is_error():
-                return result
+                raise result.error
         
-        values = tuple(result.default_value(None) for result in results)
-        return Result.Ok(values)
+        values = tuple(result.default_value(cast(Any, None)) for result in results)
+        return values
     
     context_type = None
     for op in operations:
@@ -193,13 +202,13 @@ def parallel(*operations: Operation) -> Operation:
     return Operation._from_function(parallel_op, ctx_type=context_type, require_ctx=context_type is not None)
 
 
-def fallback(*operations: Operation) -> Operation:
+def fallback(*operations: Operation[P, T]) -> Operation[P, T]:
     """
     Try each operation in order until one succeeds.
     """
-    async def fallback_op(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
+    async def fallback_op(*args: Any, **kwargs: Any) -> T:
         if not operations:
-            return Result.Error(ValueError("No operations provided to fallback"))
+            raise ValueError("No operations provided to fallback")
         
         last_error = None
         
@@ -208,11 +217,11 @@ def fallback(*operations: Operation) -> Operation:
             result = await op.execute(*args, **op_kwargs)
             
             if result.is_ok():
-                return result
+                return result.default_value(cast(Any, None))
             
             last_error = result.error
         
-        return Result.Error(last_error or Exception("All operations failed"))
+        raise last_error or Exception("All operations failed")
     
     context_type = None
     for op in operations:
@@ -225,62 +234,63 @@ def fallback(*operations: Operation) -> Operation:
     return Operation._from_function(fallback_op, ctx_type=context_type, require_ctx=context_type is not None)
 
 
-def map(operation: Operation, func: Callable[[Any], Any]) -> Operation:
+def map(operation: Operation[P, T], func: Callable[[T], U]) -> Operation[P, U]:
     """
     Map a function to an operation.
     """
     return operation.map(func)
 
 
-def filter(operation: Operation, func: Callable[[Any], bool]) -> Operation:
+def filter(operation: Operation[P, T], func: Callable[[T], bool]) -> Operation[P, T]:
     """
     Filter a list of operations.
     """
     return operation.filter(func)
 
 
-def reduce(operation: Operation, func: Callable[[Any, Any], Any]) -> Operation:
+def reduce(operation: Operation[P, List[T]], func: Callable[[T, T], T]) -> Operation[P, T]:
     """
     Reduce a list of operations.
     """
-    async def reduced(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
+    async def reduced(*args: Any, **kwargs: Any) -> T:
         result = await operation.execute(*args, **kwargs)
         
         if result.is_error():
-            return result
+            raise result.error
             
-        value = result.default_value(None)
+        value = result.default_value(cast(Any, None))
         
         if not isinstance(value, (list, tuple)):
-            return Result.Error(TypeError(f"Expected a list or tuple, got {type(value)}"))
+            raise TypeError(f"Expected a list or tuple, got {type(value)}")
         
         if not value:
-            return Result.Ok(None)
+            return cast(T, None)
         
         try:
             from functools import reduce as functools_reduce
             result_value = functools_reduce(func, value)
-            return Result.Ok(result_value)
+            return result_value
         except Exception as e:
-            return Result.Error(e)
+            raise e
     
     return Operation._from_function(reduced, ctx_type=operation.context_type, require_ctx=operation.context_type is not None)
 
-def zip(*operations: Operation) -> Operation:
+
+def zip(*operations: Operation) -> Operation[P, Tuple[Any, ...]]:
     """
     Zip a list of operations.
     """
-    async def zip_op(*args: Any, **kwargs: Any) -> Result[Tuple[Any, ...], Exception]:
+    async def zip_op(*args: Any, **kwargs: Any) -> Tuple[Any, ...]:
         if not operations:
-            return Result.Ok(())
+            return ()
         
         results = await parallel(*operations).execute(*args, **kwargs)
         
         if results.is_error():
-            return results
+            raise results.error
             
-        values = results.default_value(())
-        return Result.Ok(values)
+        values = results.default_value(cast(Any, None))
+        return values
     
     context_type = None
     for op in operations:
@@ -293,72 +303,94 @@ def zip(*operations: Operation) -> Operation:
     return Operation._from_function(zip_op, ctx_type=context_type, require_ctx=context_type is not None)
 
 
-def flat_map(operation: Operation, func: Callable[[Any], List[Any]]) -> Operation:
+def flat_map(
+    operation: Operation[P, T],
+    func: Callable[[T], List[U] | List[List[U]]],
+) -> Operation[P, List[U]]:
     """
-    Flat map a function to an operation.
+    Apply *func* to the **single** value returned by *operation*,
+    then flatten the resulting list one level.
+
+    Equivalent to lodash's `flatMap` or Kotlin's `flatMap`.
     """
-    async def flat_mapped(*args: Any, **kwargs: Any) -> Result[List[Any], Exception]:
-        result = await operation.execute(*args, **kwargs)
-        
-        if result.is_error():
-            return result
-            
-        value = result.default_value(None)
-        
+
+    async def flat_mapped(*args: Any, **kwargs: Any) -> List[U]:
+        res = await operation.execute(*args, **kwargs)
+        if res.is_error():
+            raise res.error
+
+        value = res.default_value(cast(Any, None))
+
         try:
-            mapped_values = func(value)
-            flattened = [item for sublist in mapped_values for item in sublist]
-            return Result.Ok(flattened)
-        except Exception as e:
-            return Result.Error(e)
-    
-    return Operation._from_function(flat_mapped, ctx_type=operation.context_type, require_ctx=operation.context_type is not None)
+            mapped = func(cast(T, value))
+        except Exception as exc:          # propagate mapper failure cleanly
+            raise exc
+
+        if not isinstance(mapped, list):
+            raise TypeError(
+                f"Mapper must return a list, got {type(mapped)}"
+            )
+
+        # flatten *one* level
+        out: List[U] = []
+        for item in mapped:
+            if isinstance(item, list):
+                out.extend(item)
+            else:                         # already an element
+                out.append(cast(U, item))
+        return out
+
+    return Operation._from_function(
+        flat_mapped,
+        ctx_type=operation.context_type,
+        require_ctx=operation.context_type is not None,
+    )
 
 
-def group_by(operation: Operation, func: Callable[[Any], Any]) -> Operation:
+def group_by(operation: Operation[P, List[T]], func: Callable[[T], U]) -> Operation[P, Dict[U, List[T]]]:
     """
     Group a list of operations by a function.
     """
-    async def grouped(*args: Any, **kwargs: Any) -> Result[Dict[Any, List[Any]], Exception]:
+    async def grouped(*args: Any, **kwargs: Any) -> Dict[U, List[T]]:
         result = await operation.execute(*args, **kwargs)
         
         if result.is_error():
-            return result
+            raise result.error
             
-        value = result.default_value(None)
+        value = result.default_value(cast(Any, None))
         
         if not isinstance(value, (list, tuple)):
-            return Result.Error(TypeError(f"Expected a list or tuple, got {type(value)}"))
+            raise TypeError(f"Expected a list or tuple, got {type(value)}")
         
         try:
-            groups: Dict[Any, List[Any]] = {}
+            groups: Dict[U, List[T]] = {}
             for item in value:
                 key = func(item)
                 if key not in groups:
                     groups[key] = []
                 groups[key].append(item)
             
-            return Result.Ok(groups)
+            return groups
         except Exception as e:
-            return Result.Error(e)
+            raise e
     
     return Operation._from_function(grouped, ctx_type=operation.context_type, require_ctx=operation.context_type is not None)
 
 
-def partition(operation: Operation, func: Callable[[Any], bool]) -> Operation:
+def partition(operation: Operation[P, List[T]], func: Callable[[T], bool]) -> Operation[P, Tuple[List[T], List[T]]]:
     """
     Partition a list of operations.
     """
-    async def partitioned(*args: Any, **kwargs: Any) -> Result[Tuple[List[Any], List[Any]], Exception]:
+    async def partitioned(*args: Any, **kwargs: Any) -> Tuple[List[T], List[T]]:
         result = await operation.execute(*args, **kwargs)
         
         if result.is_error():
-            return result
+            raise result.error
             
-        value = result.default_value(None)
+        value = result.default_value(cast(Any, None))
         
         if not isinstance(value, (list, tuple)):
-            return Result.Error(TypeError(f"Expected a list or tuple, got {type(value)}"))
+            raise TypeError(f"Expected a list or tuple, got {type(value)}")
         
         try:
             truthy = []
@@ -370,55 +402,55 @@ def partition(operation: Operation, func: Callable[[Any], bool]) -> Operation:
                 else:
                     falsy.append(item)
             
-            return Result.Ok((truthy, falsy))
+            return (truthy, falsy)
         except Exception as e:
-            return Result.Error(e)
+            raise e
     
     return Operation._from_function(partitioned, ctx_type=operation.context_type, require_ctx=operation.context_type is not None)
 
 
-def first(operation: Operation) -> Operation:
+def first(operation: Operation[P, List[T]]) -> Operation[P, T]:
     """
     Return the first operation.
     """
-    async def first_op(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
+    async def first_op(*args: Any, **kwargs: Any) -> T:
         result = await operation.execute(*args, **kwargs)
         
         if result.is_error():
-            return result
+            raise result.error
             
-        value = result.default_value(None)
+        value = result.default_value(cast(Any, None))
         
         if not isinstance(value, (list, tuple)):
-            return Result.Error(TypeError(f"Expected a list or tuple, got {type(value)}"))
+            raise TypeError(f"Expected a list or tuple, got {type(value)}")
         
         if not value:
-            return Result.Error(IndexError("Sequence is empty"))
+            raise IndexError("Sequence is empty")
         
-        return Result.Ok(value[0])
+        return value[0]
     
     return Operation._from_function(first_op, ctx_type=operation.context_type, require_ctx=operation.context_type is not None)
 
 
-def last(operation: Operation) -> Operation:
+def last(operation: Operation[P, List[T]]) -> Operation[P, T]:
     """
     Return the last operation.
     """
-    async def last_op(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
+    async def last_op(*args: Any, **kwargs: Any) -> T:
         result = await operation.execute(*args, **kwargs)
         
         if result.is_error():
-            return result
+            raise result.error
             
-        value = result.default_value(None)
+        value = result.default_value(cast(Any, None))
         
         if not isinstance(value, (list, tuple)):
-            return Result.Error(TypeError(f"Expected a list or tuple, got {type(value)}"))
+            raise TypeError(f"Expected a list or tuple, got {type(value)}")
         
         if not value:
-            return Result.Error(IndexError("Sequence is empty"))
+            raise IndexError("Sequence is empty")
         
-        return Result.Ok(value[-1])
+        return value[-1]
     
     return Operation._from_function(last_op, ctx_type=operation.context_type, require_ctx=operation.context_type is not None)
 
@@ -449,7 +481,10 @@ async def gather_operations(
         op_kwargs = dict(execution_kwargs)
 
         if args is not None or kwargs is not None:
-            op = op(*args or [], **op_kwargs)
+            maybe = op(*args or [], **op_kwargs)
+            # Both Operation and _BoundCall expose .execute()
+            tasks.append(maybe.execute(**op_kwargs))  # type: ignore[attr-defined]
+            continue
 
         if (
             context is not None

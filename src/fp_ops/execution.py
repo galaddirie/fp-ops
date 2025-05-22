@@ -1,12 +1,15 @@
 import collections
 import inspect
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Mapping, Tuple, Any
+from typing import Callable, Dict, List, Mapping, Tuple, Any, Optional, TypeVar, cast
 
 from .graph import OpGraph, OpSpec
 from fp_ops.context import BaseContext
-
+from fp_ops.primitives import Template
 from expression import Result, Ok, Error
+
+T = TypeVar('T')
+
 @dataclass(frozen=True, slots=True)
 class ExecutionPlan:
     """
@@ -36,7 +39,11 @@ class ExecutionPlan:
 
             if tpl.has_placeholders():
                 # Wrap placeholder templates so the arity matches the executor
-                renderers[spec.id] = lambda val, _ctx, t=tpl: t.render(val)
+                def make_renderer(template: Template) -> Callable[[object, Optional[object]], Tuple[Tuple, Dict]]:
+                    def renderer(val: object, _ctx: Optional[object]) -> Tuple[Tuple, Dict]:
+                        return cast(Tuple[Tuple, Dict], template.render(val))
+                    return renderer
+                renderers[spec.id] = make_renderer(tpl)
 
             elif not tpl.args and not tpl.kwargs:
                 params = [
@@ -50,23 +57,36 @@ class ExecutionPlan:
                     inspect.Parameter.POSITIONAL_ONLY,
                     inspect.Parameter.POSITIONAL_OR_KEYWORD,
                 ):
-                    renderers[spec.id] = lambda v, _c: ((v,), {}) if v is not None else ((), {})
+                    def make_unary_renderer() -> Callable[[object, Optional[object]], Tuple[Tuple, Dict]]:
+                        def renderer(v: object, _c: Optional[object]) -> Tuple[Tuple, Dict]:
+                            return ((v,), {}) if v is not None else ((), {})
+                        return renderer
+                    renderers[spec.id] = make_unary_renderer()
                 # ── leading *args and no regular params (def f(*args, **kw))
                 elif params and params[0].kind is inspect.Parameter.VAR_POSITIONAL:
-                    renderers[spec.id] = lambda v, _c: (
-                        (v,) if v is not None else (),
-                        {},
-                    )
+                    def make_var_positional_renderer() -> Callable[[object, Optional[object]], Tuple[Tuple, Dict]]:
+                        def renderer(v: object, _c: Optional[object]) -> Tuple[Tuple, Dict]:
+                            return ((v,) if v is not None else (), {})
+                        return renderer
+                    renderers[spec.id] = make_var_positional_renderer()
 
                 # ── fallback: inject into the first named parameter ────────
                 else:
                     first_name = params[0].name if params else None
-                    renderers[spec.id] = lambda v, _c, fn=first_name: ((), {fn: v} if fn else {})
+                    def make_named_param_renderer(fn: Optional[str]) -> Callable[[object, Optional[object]], Tuple[Tuple, Dict]]:
+                        def renderer(v: object, _c: Optional[object]) -> Tuple[Tuple, Dict]:
+                            return ((), {fn: v} if fn else {})
+                        return renderer
+                    renderers[spec.id] = make_named_param_renderer(first_name)
 
             else:
                 const_args = tuple(tpl.args)
                 const_kwargs = dict(tpl.kwargs)
-                renderers[spec.id] = lambda _v, _c, ca=const_args, ck=const_kwargs: (ca, ck)
+                def make_const_renderer(ca: Tuple, ck: Dict) -> Callable[[object, Optional[object]], Tuple[Tuple, Dict]]:
+                    def renderer(_v: object, _c: Optional[object]) -> Tuple[Tuple, Dict]:
+                        return (ca, ck)
+                    return renderer
+                renderers[spec.id] = make_const_renderer(const_args, const_kwargs)
 
         scc: Dict[str, List[str]] = collections.defaultdict(list)
         for node_id, edges in graph._out_edges.items():
