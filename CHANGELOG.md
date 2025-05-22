@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.2] - 2025-05-30
+
+### Added
+- **Append Semantics**: Operations now merge arguments when called multiple times instead of replacing them
+- **Partial Method**: Added `partial()` method to Operation class for creating partially applied operations
+- **Deep Placeholder Preservation**: Placeholders inside nested structures are properly maintained when appending arguments
+- **Context Factory Support**: Context factories are now respected after appending new arguments
+
+### Fixed
+- **Better Error Messages**: Improved error messages for operations with too many positional arguments
+- **Context Handling**: Fixed context injection when appending arguments to context-aware operations
+
+### Changed
+- **Argument Handling**: Changed how single-step operations handle multiple calls - positional args are appended, kwargs are merged with newer values taking precedence
+
 ## [0.2.1] - 2025-05-22
 
 ### Added
