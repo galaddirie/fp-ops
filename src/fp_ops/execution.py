@@ -5,7 +5,7 @@ from typing import Callable, Dict, List, Mapping, Tuple, Any, Optional, TypeVar,
 
 from .graph import OpGraph, OpSpec
 from fp_ops.context import BaseContext
-from fp_ops.primitives import Template
+from fp_ops.primitives import Template, Placeholder
 from expression import Result, Ok, Error
 
 T = TypeVar('T')
@@ -32,18 +32,22 @@ class ExecutionPlan:
     def from_graph(cls, graph: OpGraph) -> "ExecutionPlan":
         order = graph.topological_order()
 
-        renderers: Dict[str, Callable[[object, object | None], Tuple[Tuple, Dict]]] = {}
+        renderers: Dict[str, Callable[[object, Optional[object]], Tuple[Tuple, Dict]]] = {}
 
         for spec in order:
             tpl = spec.template
 
-            if tpl.has_placeholders():
-                # Wrap placeholder templates so the arity matches the executor
+            if tpl.has_placeholders() and graph.incoming(spec.id):
+                # ── internal nodes get the placeholder renderer ──────────
                 def make_renderer(template: Template) -> Callable[[object, Optional[object]], Tuple[Tuple, Dict]]:
                     def renderer(val: object, _ctx: Optional[object]) -> Tuple[Tuple, Dict]:
                         return cast(Tuple[Tuple, Dict], template.render(val))
                     return renderer
                 renderers[spec.id] = make_renderer(tpl)
+            elif tpl.has_placeholders():
+                # ── HEAD nodes keep raw template so placeholders survive ─
+                # But we need to handle placeholder rendering in the executor
+                renderers[spec.id] = lambda _v, _c, t=tpl: (t.args, dict(t.kwargs))
 
             elif not tpl.args and not tpl.kwargs:
                 params = [
@@ -52,7 +56,7 @@ class ExecutionPlan:
                     if p.name not in ("self", "context")
                 ]
 
-                # ── plain unary func (first param is regular) ──────────────
+                # plain unary func (first param is regular) 
                 if params and params[0].kind in (
                     inspect.Parameter.POSITIONAL_ONLY,
                     inspect.Parameter.POSITIONAL_OR_KEYWORD,
@@ -62,7 +66,7 @@ class ExecutionPlan:
                             return ((v,), {}) if v is not None else ((), {})
                         return renderer
                     renderers[spec.id] = make_unary_renderer()
-                # ── leading *args and no regular params (def f(*args, **kw))
+                # leading *args and no regular params (def f(*args, **kw))
                 elif params and params[0].kind is inspect.Parameter.VAR_POSITIONAL:
                     def make_var_positional_renderer() -> Callable[[object, Optional[object]], Tuple[Tuple, Dict]]:
                         def renderer(v: object, _c: Optional[object]) -> Tuple[Tuple, Dict]:
@@ -70,7 +74,7 @@ class ExecutionPlan:
                         return renderer
                     renderers[spec.id] = make_var_positional_renderer()
 
-                # ── fallback: inject into the first named parameter ────────
+                #  fallback: inject into the first named parameter 
                 else:
                     first_name = params[0].name if params else None
                     def make_named_param_renderer(fn: Optional[str]) -> Callable[[object, Optional[object]], Tuple[Tuple, Dict]]:
@@ -158,14 +162,38 @@ def _merge_first_call(
             pass
 
     # any left-over runtime positionals → too many arguments
-    if any(rt_pos):
-        raise TypeError("Too many positional arguments supplied.")
+    remaining_rt_pos = list(rt_pos)
+    if remaining_rt_pos:
+        # Get the actual number of positional args expected
+        pos_params = [p for p in signature.parameters.values() 
+                      if p.kind in (inspect.Parameter.POSITIONAL_ONLY, 
+                                    inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+        raise TypeError(
+            f"Too many positional arguments: got {len(rt_args)} (rt_args={rt_args!r}), "
+            f"expected at most {len(pos_params)} for parameters {[p.name for p in pos_params]!r}. "
+            f"Signature: {signature!r}, "
+            f"base_args={base_args!r}, base_kwargs={base_kwargs!r}, "
+            f"rt_args={rt_args!r}, rt_kwargs={rt_kwargs!r}"
+        )
         
     for k, v in rt_kwargs.items():
         if k not in final:
             final[k] = v
 
     return (), final
+
+
+def _has_nested_placeholder(obj: Any) -> bool:
+    """Check if an object contains any Placeholder instances (including nested)."""
+    from fp_ops.primitives import Placeholder
+    
+    if isinstance(obj, Placeholder):
+        return True
+    if isinstance(obj, dict):
+        return any(_has_nested_placeholder(v) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_has_nested_placeholder(v) for v in obj)
+    return False
 
 
 class Executor:
@@ -198,6 +226,22 @@ class Executor:
                 # Start from template (pre-bound constants) then
                 # overlay runtime arguments, avoiding duplicates
                 args, kwargs = self._plan.arg_render[spec.id](None, None)
+                
+                # Special handling for single-step operations with placeholders
+                # If template has placeholders and runtime args are provided,
+                # check if we should use runtime args to render placeholders
+                if (spec.template.has_placeholders() and first_args and 
+                    len(self._plan.order) == 1):  # Single-step operation
+                    # Check if any kwargs contain nested placeholders
+                    has_nested = any(_has_nested_placeholder(v) for v in kwargs.values())
+                    if has_nested:
+                        # Use the first runtime arg to render placeholders
+                        rendered_args, rendered_kwargs = spec.template.render(first_args[0])
+                        # Update kwargs with rendered values
+                        for k, v in rendered_kwargs.items():
+                            if k in kwargs and _has_nested_placeholder(kwargs[k]):
+                                kwargs[k] = v
+                
                 args, kwargs = _merge_first_call(
                     spec.signature, args, kwargs, first_args, first_kwargs
                 )
