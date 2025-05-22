@@ -16,6 +16,8 @@ FP-Ops is a functional programming library for Python that lets you convert you 
 - **Async-First**: Designed for asynchronous operations from the ground up
 - **Type Safety**: Comprehensive type hints for better IDE support and code safety
 - **Functional Patterns**: Implements common functional programming patterns like map, filter, and reduce
+- **Lazy Execution**: Only execute operations when the result is needed
+- **Composition is associative**: `(a >> b) >> c == a >> (b >> c)`
 
 ## Installation
 

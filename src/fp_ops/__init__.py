@@ -1,6 +1,6 @@
 from fp_ops.context import BaseContext
-from fp_ops.placeholder import _, Placeholder
-from fp_ops.decorators import operation
+from fp_ops.primitives import _, Placeholder
+from fp_ops.operator import operation, Operation, constant, identity
 
 
 
@@ -12,4 +12,7 @@ __all__ = [
     "Placeholder",
     "_",
     "operation",
+    "Operation",
+    "constant",
+    "identity",
 ]

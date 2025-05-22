@@ -1,1 +1,3 @@
-from fp_ops.operator import operation # noqa
+from fp_ops.operator import operation
+
+__all__ = ["operation"]
