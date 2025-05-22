@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Type, Tuple
 from unittest.mock import Mock, patch, AsyncMock
 
 from fp_ops.context import BaseContext
-from fp_ops.operator import Operation, operation, identity
+from fp_ops.operator import operation
 from expression import Result
 
 from fp_ops.composition import (

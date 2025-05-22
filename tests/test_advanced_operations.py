@@ -6,12 +6,12 @@ from typing import Dict, List, Any, Optional, Callable, TypeVar, Awaitable
 from expression import Result
 
 from fp_ops.operator import (
-     constant, 
+     Operation,
+     operation,
      identity,
-     Operation
 )
 from fp_ops.flow import branch, attempt, fail
-from fp_ops.decorators import operation
+
 T = TypeVar("T")
 S = TypeVar("S")
 
@@ -135,7 +135,7 @@ class TestContinuationMonad:
         
         composed_pipeline = (
             fetch_item >> (
-                operation(lambda item: item) & (
+                identity & (
                     extract_category_id >> (
                         fetch_category & fetch_related_items
                     )
@@ -165,12 +165,14 @@ class TestContinuationMonad:
             category = category_result.default_value(None)
             return {"item": item, "category": category}
         
-        result = await fetch_item.apply_cont(continuation)
+        result = await fetch_item.apply_cont(continuation)(1)
+
+        data = result.default_value(None)
         
-        assert "item" in result
-        assert "category" in result
-        assert result["item"]["id"] == 1
-        assert result["category"]["id"] == result["item"]["category_id"]
+        assert "item" in data, f"Item should be in data {data}"
+        assert "category" in data, f"Category should be in data {data}"
+        assert data["item"]["id"] == 1, f"Item should have id=1 {data}"
+        assert data["category"]["id"] == data["item"]["category_id"], f"Category should have id={data['item']['category_id']} {data}"
 
 class TestComplexTransformations:
     

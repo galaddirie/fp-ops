@@ -371,7 +371,7 @@ class TestExecutionPatterns:
 
         result = await pipeline(a=10, b=6)
         assert result.is_ok()
-        assert result.default_value(None) == 4, f"we should ignore the params passed in if we have a prebound op, got {result.default_value(None)}"
+        assert result.default_value(None) == 17, f"we should override the prebound op with the params passed in, got {result.default_value(None)}"
 
     @pytest.mark.asyncio
     async def test_prebound_ops_override_with_args(self):
@@ -380,7 +380,7 @@ class TestExecutionPatterns:
 
         result = await pipeline(10, 6)
         assert result.is_ok()
-        assert result.default_value(None) == 4, f"we should ignore the params passed in if we have a prebound op, got {result.default_value(None)}"
+        assert result.default_value(None) == 17, f"we should override the prebound op with the params passed in, got {result.default_value(None)}"
 
     @pytest.mark.asyncio
     async def test_prebound_ops_override_with_args_mixed_params(self):
@@ -389,4 +389,4 @@ class TestExecutionPatterns:
 
         result = await pipeline(10, b=6)
         assert result.is_ok()
-        assert result.default_value(None) == 4, f"we should ignore the params passed in if we have a prebound op, got {result.default_value(None)}"
+        assert result.default_value(None) == 17, f"we should override the prebound op with the params passed in, got {result.default_value(None)}"

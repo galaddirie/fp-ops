@@ -6,8 +6,7 @@ from expression import Result
 
 from fp_ops.operator import (
     Operation,
-    identity,
-    constant
+    constant,
 )
 from fp_ops.flow import branch, attempt, fail
 from fp_ops.composition import gather_operations

@@ -5,14 +5,10 @@ import json
 from typing import Dict, List, Any, Optional, Tuple
 from expression import Result
 
-from fp_ops.operator import (
-    constant,
-    identity,
-    Operation
-)
+from fp_ops.operator import Operation, constant, identity
 from fp_ops.flow import branch, attempt, fail
 from fp_ops.decorators import operation
-from fp_ops.placeholder import _
+from fp_ops.primitives import _
 
 @pytest.fixture
 def event_loop():
@@ -257,7 +253,7 @@ class TestFallbackPatterns:
         result_without_users = await complex_fallback("https://api.example.com/posts")
         assert result_without_users.is_ok()
         data_without_users = result_without_users.default_value(None)
-        assert len(data_without_users["users"]) == 1
+        assert len(data_without_users["users"]) == 1 # current data_without_users == https://api.example.com/posts
         assert data_without_users["users"][0]["name"] == "Default User"
 
 class TestTransformations:
@@ -325,7 +321,7 @@ class TestUtilities:
 
     @pytest.mark.asyncio
     async def test_retry_exhausted(self):
-        always_fails = operation(lambda: asyncio.sleep(0.05)) >> fail(RuntimeError("Always fails"))
+        always_fails = operation(lambda: None) >> fail(RuntimeError("Always fails"))
         retry_but_fail = always_fails.retry(attempts=2, delay=0.01)
         result = await retry_but_fail()
         assert result.is_error()
@@ -413,15 +409,18 @@ class TestOverloading:
         @operation
         async def add(a: int, b: int) -> int:
             return a + b
+        
         @operation
         def add_one(a: int) -> int:
+            
             return a + 1
         pipeline = add(1, 2) >> add_one
         result = await pipeline()
         assert result.is_ok()
         assert result.default_value(None) == 4
+
         pipeline = add(1,2) >> add_one
-        result = await pipeline()
+        result = await pipeline(1,0)
         assert result.is_ok()
         assert result.default_value(None) == 2
 
@@ -639,7 +638,7 @@ class TestPlaceholders:
         @operation
         async def add(a: int, b: int) -> int:
             return a + b
-        pipeline = add(5, 3) >> _
+        pipeline = add(5, 3) >> identity(_)
         result = await pipeline()
         assert result.is_ok()
         assert result.default_value(None) == 8
