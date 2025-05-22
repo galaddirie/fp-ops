@@ -1,12 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.1] - 2025-05-22
 
 ### Added
+- improved test coverage
+- chores
 
-### Fixed
-
-### Changed
 
 ## [0.2.0] - 2025-05-22
 
