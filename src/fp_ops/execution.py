@@ -47,7 +47,11 @@ class ExecutionPlan:
             elif tpl.has_placeholders():
                 # ── HEAD nodes keep raw template so placeholders survive ─
                 # But we need to handle placeholder rendering in the executor
-                renderers[spec.id] = lambda _v, _c, t=tpl: (t.args, dict(t.kwargs))
+                def make_head_renderer(template: Template) -> Callable[[object, Optional[object]], Tuple[Tuple, Dict]]:
+                    def renderer(_v: object, _c: Optional[object]) -> Tuple[Tuple, Dict]:
+                        return (tuple(template.args), dict(template.kwargs))
+                    return renderer
+                renderers[spec.id] = make_head_renderer(tpl)
 
             elif not tpl.args and not tpl.kwargs:
                 params = [

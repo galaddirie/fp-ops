@@ -216,7 +216,7 @@ class Operation(Generic[P, R]):
                 {**prev_tpl.kwargs, **kwargs} if kwargs else dict(prev_tpl.kwargs)
             )
             
-            bound_tpl = Template(args=merged_args, kwargs=merged_kwargs)
+            bound_tpl: Template = Template(args=merged_args, kwargs=merged_kwargs)
 
             # new id avoids duplicate node errors when the same op is reused
             new_spec = replace(spec, id=str(uuid.uuid4()), template=bound_tpl)
@@ -768,7 +768,7 @@ class Operation(Generic[P, R]):
         Returns:
             A new Operation with merged arguments.
         """
-        return self(*args, **kwargs)
+        return cast(Operation[P, R], self(*args, **kwargs))
 
 
 class _BoundCall(Generic[P, R]):
@@ -824,7 +824,7 @@ class _BoundCall(Generic[P, R]):
     # pipeline(1, 2) # this is wrong, it should be pipeline(1, 2).execute() OR pipeline.execute(1, 2)
     def __call__(
         self, *args: Any, **kwargs: Any
-    ) -> "_BoundCall[P, R] | Operation[P, R]":
+    ) -> Any:
         """Call the underlying pipeline with new arguments.
 
         Args:
