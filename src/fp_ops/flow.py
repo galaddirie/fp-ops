@@ -45,9 +45,9 @@ def attempt(
 
     return operation(risky_fn, context=context, context_type=context_type)
 
-def retry(op: Operation, *, max_retries: int = 3, delay: float = 0.1) -> Operation:
+def retry(op: Operation, *, max_retries: int = 3, delay: float = 0.1, backoff: float = 1.0) -> Operation:
     """Just sugar for `op.retry(...)` to keep legacy code unchanged."""
-    return op.retry(attempts=max_retries, delay=delay)
+    return op.retry(attempts=max_retries, delay=delay, backoff=backoff)
 
 def tap(
     op: Operation,
@@ -60,9 +60,22 @@ def tap(
     Attach `side_effect` to `op` and forward the original value.
     Works with sync / async side-effects.
     """
-    setattr(side_effect, "requires_context", context)
-    setattr(side_effect, "context_type",   context_type)
-    return op.tap(side_effect)
+    async def _tap_wrapper(x, *, context=None):
+        try:
+            maybe = (side_effect(x, context=context)            # ctx injected if declared
+                     if context
+                     else side_effect(x))
+            if inspect.isawaitable(maybe):
+                await maybe
+        except Exception:
+            pass          # side-effect exceptions are ignored
+        return x
+
+    return op >> Operation._from_function(
+        _tap_wrapper,
+        require_ctx=context,
+        ctx_type=context_type,
+    )
 
 def branch(
     condition: Union[Callable[..., bool], Operation[Any, bool, Any]],
@@ -73,43 +86,85 @@ def branch(
     Evaluate *condition* and run `true_op` or `false_op`.
     `condition` may be a plain callable or an Operation that returns bool.
     """
-    cond_op: Operation[Any, bool, Any]
-    if isinstance(condition, Operation):
-        cond_op = condition
-    else:
-        cond_op = operation(condition)
+    _UNSET = object()
+    cond_op = condition if isinstance(condition, Operation) else operation(condition)
 
-    def _choose(flag: bool) -> Operation:
-        return true_op if flag else false_op
+    async def _branch(value=_UNSET, *args, **kwargs):
+        has_val = value is not _UNSET
+        # --- evaluate condition -------------------------------------------
+        if isinstance(condition, Operation):
+            res = await (
+                cond_op.execute(value, **kwargs) if has_val and not cond_op.is_bound
+                else cond_op.execute(**kwargs)
+            )
+            if res.is_error():
+                raise res.error
+            flag = res.default_value(False)
+        else:                                           # plain callable
+            try:
+                out = (
+                    condition(value, **kwargs) if has_val
+                    else condition(**kwargs)
+                )        # may be async
+                flag = await out if inspect.isawaitable(out) else out
+            except Exception as exc:
+                raise exc
 
-    return cond_op.bind(_choose)
+        chosen = true_op if flag else false_op
+        return await (
+            chosen.execute(value, **kwargs) if has_val and not chosen.is_bound
+            else chosen.execute(**kwargs)
+        )
+
+    # ---- context metadata (highest-order wins) ----------------------------
+    ctx_type = next((op.context_type for op in (cond_op, true_op, false_op) if op.context_type), None)
+    return Operation._from_function(_branch,
+                                    require_ctx=ctx_type is not None,
+                                    ctx_type=ctx_type)
 
 def loop_until(
-    predicate: Callable[[T], bool],
+    predicate: Callable[..., bool],
     body: Operation[Any, T, Any],
     *,
     max_iterations: int = 10,
     delay: float = 0.1,
+    context: bool = False,
+    context_type: Type[BaseContext] | None = None,
 ) -> Operation[Any, T, Any]:
-    """
-    Repeatedly feed the *current* value into `body` until `predicate(value)` is
-    True or `max_iterations` is reached.
-    """
+    """Repeat *body* until *predicate* is satisfied or the iteration limit is hit."""
 
-    @operation
-    async def _looper(start: T, *args, **kw) -> T:
-        value: T = start
-        for _ in range(max_iterations):
-            if await _safe_pred(predicate, value):
-                return value
-            res = await body.execute(value, *args, **kw)
+    async def _eval_pred(val, *, ctx):
+        if isinstance(predicate, Operation):
+            res = await (predicate.execute(val, context=ctx) if not predicate.is_bound
+                         else predicate.execute(context=ctx))
             if res.is_error():
                 raise res.error
-            value = res.default_value(value)
-            await asyncio.sleep(delay)
-        return value
+            return res.default_value(False)
 
-    return _looper
+        out = (predicate(val, context=ctx)                    # may or may not want ctx
+               if getattr(predicate, "requires_context", False)
+               else predicate(val))
+        return await out if inspect.isawaitable(out) else out
+
+    async def _looper(current, *extra_args, **extra_kw):
+        ctx = extra_kw.get("context")
+        for _ in range(max_iterations):
+            if await _eval_pred(current, ctx=ctx):
+                return current
+
+            res = await body.execute(current, *extra_args, **extra_kw)
+            if res.is_error():
+                raise res.error
+            current = res.default_value(current)
+            if delay:
+                await asyncio.sleep(delay)
+        return current
+
+    # Prefer an explicit context_type argument, otherwise inherit
+    ctx_t = context_type or body.context_type
+    return Operation._from_function(_looper,
+                                    require_ctx=context or (ctx_t is not None),
+                                    ctx_type=ctx_t)
 
 def wait(
     op: Operation,

@@ -1,6 +1,6 @@
 import asyncio
 from typing import Any, List, Union, Callable, Tuple, Dict
-from fp_ops.operator import Operation, identity
+from fp_ops.operator import Operation, identity, _ensure_async
 from fp_ops.context import BaseContext
 from expression import Result
 
@@ -50,7 +50,7 @@ def sequence(*operations: Operation) -> Operation:
             elif issubclass(op.context_type, context_type):
                 context_type = op.context_type
 
-    return Operation(sequenced_op, context_type=context_type)
+    return Operation._from_function(sequenced_op, ctx_type=context_type, require_ctx=context_type is not None)
 
 
 def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
@@ -138,7 +138,9 @@ def pipe(*steps: Union[Operation, Callable[[Any], Operation]]) -> Operation:
             elif issubclass(step.context_type, context_type):
                 context_type = step.context_type
 
-    return Operation(piped, context_type=context_type)
+    return Operation._from_function(piped, ctx_type=context_type, require_ctx=context_type is not None)
+
+
 def compose(*operations: Operation) -> Operation:
     """
     Compose a list of operations into a single operation.
@@ -188,7 +190,7 @@ def parallel(*operations: Operation) -> Operation:
             elif issubclass(op.context_type, context_type):
                 context_type = op.context_type
                 
-    return Operation(parallel_op, context_type=context_type)
+    return Operation._from_function(parallel_op, ctx_type=context_type, require_ctx=context_type is not None)
 
 
 def fallback(*operations: Operation) -> Operation:
@@ -220,8 +222,7 @@ def fallback(*operations: Operation) -> Operation:
             elif issubclass(op.context_type, context_type):
                 context_type = op.context_type
                 
-    return Operation(fallback_op, context_type=context_type)
-
+    return Operation._from_function(fallback_op, ctx_type=context_type, require_ctx=context_type is not None)
 
 
 def map(operation: Operation, func: Callable[[Any], Any]) -> Operation:
@@ -263,7 +264,7 @@ def reduce(operation: Operation, func: Callable[[Any, Any], Any]) -> Operation:
         except Exception as e:
             return Result.Error(e)
     
-    return Operation(reduced, context_type=operation.context_type)
+    return Operation._from_function(reduced, ctx_type=operation.context_type, require_ctx=operation.context_type is not None)
 
 def zip(*operations: Operation) -> Operation:
     """
@@ -289,7 +290,7 @@ def zip(*operations: Operation) -> Operation:
             elif issubclass(op.context_type, context_type):
                 context_type = op.context_type
                 
-    return Operation(zip_op, context_type=context_type)
+    return Operation._from_function(zip_op, ctx_type=context_type, require_ctx=context_type is not None)
 
 
 def flat_map(operation: Operation, func: Callable[[Any], List[Any]]) -> Operation:
@@ -311,7 +312,7 @@ def flat_map(operation: Operation, func: Callable[[Any], List[Any]]) -> Operatio
         except Exception as e:
             return Result.Error(e)
     
-    return Operation(flat_mapped, context_type=operation.context_type)
+    return Operation._from_function(flat_mapped, ctx_type=operation.context_type, require_ctx=operation.context_type is not None)
 
 
 def group_by(operation: Operation, func: Callable[[Any], Any]) -> Operation:
@@ -341,7 +342,7 @@ def group_by(operation: Operation, func: Callable[[Any], Any]) -> Operation:
         except Exception as e:
             return Result.Error(e)
     
-    return Operation(grouped, context_type=operation.context_type)
+    return Operation._from_function(grouped, ctx_type=operation.context_type, require_ctx=operation.context_type is not None)
 
 
 def partition(operation: Operation, func: Callable[[Any], bool]) -> Operation:
@@ -373,7 +374,7 @@ def partition(operation: Operation, func: Callable[[Any], bool]) -> Operation:
         except Exception as e:
             return Result.Error(e)
     
-    return Operation(partitioned, context_type=operation.context_type)
+    return Operation._from_function(partitioned, ctx_type=operation.context_type, require_ctx=operation.context_type is not None)
 
 
 def first(operation: Operation) -> Operation:
@@ -396,7 +397,7 @@ def first(operation: Operation) -> Operation:
         
         return Result.Ok(value[0])
     
-    return Operation(first_op, context_type=operation.context_type)
+    return Operation._from_function(first_op, ctx_type=operation.context_type, require_ctx=operation.context_type is not None)
 
 
 def last(operation: Operation) -> Operation:
@@ -419,7 +420,7 @@ def last(operation: Operation) -> Operation:
         
         return Result.Ok(value[-1])
     
-    return Operation(last_op, context_type=operation.context_type)
+    return Operation._from_function(last_op, ctx_type=operation.context_type, require_ctx=operation.context_type is not None)
 
 
 async def gather_operations(

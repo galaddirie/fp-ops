@@ -1,538 +1,777 @@
 from __future__ import annotations
-from typing import (
-    Callable,
-    Awaitable,
-    Any,
-    Optional,
-    Dict,
-    List,
-    TypeVar,
-    Generic,
-    overload,
-    ParamSpec,
-    Type,
-    Union,
-    Tuple,
-    cast,
-    Sequence,
-)
-import inspect
-import asyncio
-import copy
-from types import MappingProxyType
 from functools import wraps
+
+import inspect
+import uuid
+import asyncio
 from dataclasses import replace
+from functools import wraps
+from types import MappingProxyType
+from typing import Any, Awaitable, Callable, Dict, List, Sequence, Tuple
+
+from expression import Error, Ok, Result
 
 from fp_ops.graph import OpGraph
-from fp_ops.primitives import Port, OpSpec
-from fp_ops.execution import ExecutionPlan, _default_executor
-
-from fp_ops.placeholder import _, Template
+from fp_ops.execution import Executor, ExecutionPlan
 from fp_ops.context import BaseContext
-from fp_ops.utils import _contains_ph
+from fp_ops.primitives import (
+    Placeholder,
+    Template,
+    OpSpec,
+    Port,
+    PortType,
+    Edge,
+    _ as PLACEHOLDER,
+)
 
-from expression import Result
 
-T = TypeVar("T")
-S = TypeVar("S")
-C = TypeVar("C", bound=Optional[BaseContext])
-P = ParamSpec("P")
-R = TypeVar("R")
-
-OpOrCallable = Union["Operation", Callable[..., Any]]
-
-def _lift_function(fn: Callable[..., Any]) -> "Operation":
+def _ensure_async(fn: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
+    """Wrap a sync function so that it is awaitable.
+    
+    Args:
+        fn: The function to wrap.
+        
+    Returns:
+        An awaitable version of the function.
     """
-    Take an arbitrary (sync-or-async) callable and turn it into an Operation node
-    that accepts exactly the *result* of the previous stage as its first arg.
+    if inspect.iscoroutinefunction(fn):
+        return fn
+
+    async def _wrapper(*args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **kwargs)
+
+    return _wrapper
+
+
+def _wrap_result(value: Any) -> Result[Any, Exception]:
+    """Lift raw value into `Result` if it is not one already.
+    
+    Args:
+        value: Any value or Result object.
+        
+    Returns:
+        A Result object containing the value.
     """
-    is_async = inspect.iscoroutinefunction(fn)
-
-    @wraps(fn)
-    async def _wrapped(x, *_, **__):
-        try:
-            if is_async:
-                return await fn(x)
-            return await asyncio.to_thread(fn, x)
-        except Exception as e:  # always wrap in Result to stay monadic
-            return Result.Error(e)
-
-    return operation(_wrapped)  # use the public decorator
+    if isinstance(value, Result):
+        return value
+    return Ok(value)
 
 
-def _ensure_operation(op: OpOrCallable) -> "Operation":
-    if isinstance(op, Operation):
-        return op
-    elif isinstance(op, Callable):
-        return _lift_function(op)
-    else:
-        raise TypeError(f"Expected Operation or Callable, got {type(op)}")
+class Operation:
+    """An Operation represents a composable unit of computation, 
+    which can be a single function or a pipeline of multiple steps.
+    
+    Operations can be composed using the '>>' operator to build pipelines.
+    
+    Examples:
+    ```python
+    # Calling an *un-bound* Operation *executes* it immediately:
+    >>> await add.execute(a=1, b=2)
 
-class Operation(Generic[T, S, C]):
+    # Calling a *pipeline* returns a `_BoundCall` proxy that stores runtime
+    # arguments until you finally ask for `.execute()`:
+    >>> await (add >> add_one)(1, 2).execute()
+
+    # You can also call the pipeline directly with arguments:
+    >>> await (add >> add_one)(1, 2)
+
+    # You can also use the `>>` operator to compose operations:
+    >>> pipeline = add >> add_one
+    >>> await pipeline(1, 2)
+    ```
+    """
+
+    _ctx_factory: Callable[[], BaseContext] | None
+    _ctx_type: type[BaseContext] | None
 
     def __init__(
-        self, graph: OpGraph, spec: OpSpec[S, C], context_type: Optional[Type[C]] = None
+        self,
+        graph: OpGraph,
+        *,
+        head_id: str,
+        tail_id: str,
+        ctx_factory: Callable[[], BaseContext] | None = None,
+        ctx_type: type[BaseContext] | None = None,
     ):
-        self._g = graph
-        self._s = spec
-        self._context_type = context_type  # deprecated but keep
-        graph.add_spec(spec)
-        self._plan_cache: ExecutionPlan | None = None
-
-    def _spec(self) -> OpSpec:
-        return self._s
-
-    def _clone(self, spec: Optional[OpSpec] = None) -> "Operation[T, S, C]":
+        """Initialize an Operation.
+        
+        Args:
+            graph: The operation graph.
+            head_id: ID of the first operation in the pipeline.
+            tail_id: ID of the last operation in the pipeline.
         """
-        Return an immutable clone of *this stage* together with a **copy of
-        the whole graph built so far**.  That lets us build new pipelines
-        without ever mutating the global `add`, `add_one`, … objects while
-        still keeping every edge that was already wired inside the current
-        expression.
+        self._graph = graph
+        self._head_id = head_id
+        self._tail_id = tail_id
+        self._plan: ExecutionPlan | None = None
+        self._ctx_factory = ctx_factory
+        self._ctx_type = ctx_type
+
+    # BACK-COMPAT SHIMS 
+    @property
+    def context_type(self):
+        """Backwards-compat attr expected by composition helpers & tests."""
+        return self._ctx_type
+
+    @property
+    def is_bound(self) -> bool:
         """
+        "Bound" ≈ the first node already owns its first argument.
+        We treat an op as bound when its head-template contains *no* placeholders
+        but does contain constants (positional or keyword).
+        """
+        head = self._graph._nodes[self._head_id]
+        tpl  = head.template
+        # TODO: should placeholders be considered bound?
+        return bool(tpl.args or tpl.kwargs) and not tpl.has_placeholders()
+
+    @classmethod
+    def _from_function(
+        cls,
+        fn: Callable[..., Any],
+        *,
+        require_ctx: bool = False,
+        ctx_type: type[BaseContext] | None = None,
+    ) -> "Operation":
+        """Create an Operation from a function.
+        
+        Args:
+            fn: The function to wrap as an Operation.
+            
+        Returns:
+            A new Operation instance.
+        """
+        spec = OpSpec(
+            id=str(uuid.uuid4()),
+            func=_ensure_async(fn),
+            signature=inspect.signature(fn),
+            ctx_type=ctx_type,
+            require_ctx=require_ctx,
+            template=Template(),
+        )
+
         g = OpGraph()
-        for sp in self._g._nodes.values():
-            g.add_spec(sp)
-        for edges in self._g._out_edges.values():
-            for e in edges:
-                g.connect(e.source, e.target)
-        return Operation(g, spec or self._s)
-
-    def _bind_template(self, tpl: Template) -> "Operation":
-        new_spec = replace(
-            self._s,
-            id=self._g.new_id(f"{self._s.id}_tpl"),
-            bound_template=tpl,
-            bound_args=(),
-            bound_kwargs=MappingProxyType({}),
+        g.add_node(spec)
+        return cls(
+            graph=g,
+            head_id=spec.id,
+            tail_id=spec.id,
+            ctx_type=ctx_type,          # ← preserve the context metadata
         )
-        return self._clone(new_spec)
 
-    def _bind_constants(self, tpl: Template) -> "Operation":
-        new_spec = replace(
-            self._s,
-            id=self._g.new_id(f"{self._s.id}_const"),
-            bound_template=None,
-            bound_args=tpl.args,
-            bound_kwargs=MappingProxyType(tpl.kwargs),
-        )
-        return self._clone(new_spec)
-
-    def _invoke_later(self, tpl: Template) -> "Operation":
-        invoked = copy.copy(self)
-        invoked._call_args = tpl.args  # type: ignore[attr-defined]
-        invoked._call_kwargs = tpl.kwargs  # type: ignore[attr-defined]
-        invoked._plan_cache = None
-        return invoked
-
-    def __rshift__(self, other: "Operation[T, S, C]") -> "Operation[T, S, C]":
+    def __call__(self, *args: Any, **kwargs: Any):
+        """Call the operation with the given arguments.
+        
+        Args:
+            *args: Positional arguments.
+            **kwargs: Keyword arguments.
+            
+        Returns:
+            Either a new Operation (if single step) or a _BoundCall.
         """
-        Connect the *result* of this Operation to an appropriate input of
-        the next Operation and return the *tail* (`other`) so that further
-        chaining continues left-to-right.
-        """
-        self = self._clone()
-        other = _ensure_operation(other)._clone()
+        if self._is_single_step():
+            first_step_id = self._head_id
+            spec = self._graph._nodes[first_step_id]
+            bound_tpl = Template(args=args, kwargs=kwargs)
 
-        if self._g is not other._g:
-            for sp in other._g._nodes.values():
-                self._g.add_spec(sp)
-            for edges in other._g._out_edges.values():
-                for e in edges:
-                    self._g.connect(e.source, e.target)
-            other._g = self._g
-
-        chosen_param: str | None = None
-        tpl = other._s.bound_template
-
-        for idx, pname in enumerate(other._s.params):
-            if pname == "context":
-                continue
-
-            if self._g._incoming_edges(Port(other._s.id, pname)):
-                continue
-
-            if tpl is not None:
-                tpl_val: Any | None = None
-                if pname in tpl.kwargs:
-                    tpl_val = tpl.kwargs[pname]
-                elif idx < len(tpl.args):
-                    tpl_val = tpl.args[idx]
-
-                if tpl_val is _:
-                    chosen_param = pname
-                    break
-                if tpl_val is not None:
-                    continue
-
-            if pname in other._s.bound_kwargs and _contains_ph(
-                other._s.bound_kwargs[pname]
-            ):
-                chosen_param = pname
-                break
-            if idx < len(other._s.bound_args) and _contains_ph(
-                other._s.bound_args[idx]
-            ):
-                chosen_param = pname
-                break
-
-            chosen_param = pname
-            break
-
-        if chosen_param is not None:
-            self._g.connect(
-                Port(self._s.id, "result"),
-                Port(other._s.id, chosen_param),
+            # new id avoids duplicate node errors when the same op is reused
+            new_spec = replace(spec,
+                               id=str(uuid.uuid4()),
+                               template=bound_tpl)
+            new_graph = OpGraph()
+            new_graph.add_node(new_spec)
+            
+            return Operation(
+                graph=new_graph,
+                head_id=new_spec.id,
+                tail_id=new_spec.id,
+                ctx_factory=self._ctx_factory,
+                ctx_type=self._ctx_type,
             )
 
-        return other
+        return _BoundCall(pipeline=self, args=args, kwargs=kwargs)
 
-    def __and__(self, other: "Operation") -> "Operation":
-        """Run *both* branches and return a `(left, right)` tuple."""
-        self = self._clone()
-        other = _ensure_operation(other)._clone()
-        self._g.merge(other._g)
-
-        async def _join(a, b):
-            return (a, b)
-
-        join_spec = OpSpec(
-            id=self._g.new_id("tuple"),
-            func=_join,
-            signature=inspect.signature(_join),
-            requires_ctx=False,
-            ctx_type=None,
-        )
-        self._g.add_spec(join_spec)
-
-        # wire the two results into the new node
-        self._g.connect(Port(self._s.id, "result"), Port(join_spec.id, "a"))
-        self._g.connect(Port(other._s.id, "result"), Port(join_spec.id, "b"))
-
-        return Operation(self._g, join_spec)
-
-    def __or__(self, other: "Operation") -> "Operation":
+    def __await__(self):
+        """Make the operation awaitable.
+        
+        Returns:
+            Awaitable that resolves to the execution result.
         """
-        Try the *left* branch; if it returns a `Result.Error`, produce the right.
-        (Both branches are evaluated **sequentially**, mirroring the old API.)
-        """
-        self = self._clone()
-        other = _ensure_operation(other)._clone()
-
-        self._g.merge(other._g)
-
-        async def _either(a: Result, b_thunk):
-            if a.is_ok():
-                return a
-            return await b_thunk() 
-
-        async def _thunk_wrapper():
-            return await other.execute()
-
-        either_spec = OpSpec(
-            id=self._g.new_id("either"),
-            func=_either,
-            signature=inspect.signature(_either),
-            requires_ctx=False,
-            ctx_type=None,
-        )
-        self._g.add_spec(either_spec)
-
-        self._g.connect(Port(self._s.id, "result"), Port(either_spec.id, "a"))
-        either_spec = replace(
-            either_spec,
-            bound_kwargs=MappingProxyType({"b_thunk": _thunk_wrapper}),
-        )
-
-        return Operation(self._g, either_spec)
-
-    def __call__(self, *args: Any, **kwargs: Any) -> "Operation[T, S, C]":
-        tpl = Template.from_call(args, kwargs)
-
-        if self._s.bound_template or self._s.bound_args or self._s.bound_kwargs:
-            return self._invoke_later(tpl)
-
-        if any(a is _ for a in tpl.args) or any(v is _ for v in tpl.kwargs.values()):
-            return self._bind_template(tpl)
-
-        sig_params = [
-            p for p in self._s.signature.parameters if p not in ("self", "context")
-        ]
-        arg_count = len(tpl.args) + len(tpl.kwargs)
-
-        can_be_binding = (
-            arg_count > 0
-            and arg_count <= len(sig_params)
-            and all(k in sig_params for k in tpl.kwargs)
-        )
-
-        if can_be_binding and not any(
-            # positional
-            idx < len(tpl.args)
-            and self._g._incoming_edges(Port(self._s.id, pname))
-            or
-            # keyword
-            pname in tpl.kwargs
-            and self._g._incoming_edges(Port(self._s.id, pname))
-            for idx, pname in enumerate(sig_params)
-        ):
-            return self._bind_constants(tpl)
-
-        return self._invoke_later(tpl)
-
-    def __await__(self) -> Any:
         return self.execute().__await__()
+    
+    def __rshift__(self, other: "Operation") -> "Operation":
+        """Compose this operation with another operation.
+        
+        Args:
+            other: Another Operation or callable to compose with.
+            
+        Returns:
+            A new Operation representing the composition.
+            
+        Raises:
+            TypeError: If other is not an Operation or callable.
+        """
+        if not isinstance(other, Operation):
+            if callable(other):
+                other = Operation._from_function(other)
+            else:
+                raise TypeError("Right operand to >> must be an Operation.")
+
+        # make sure we can re-use the *same* op multiple times: clone RHS
+        other = other._clone()
+
+        merged = self._graph.merged_with(other._graph)
+        combined = Operation(
+            graph=merged,
+            head_id=self._head_id,
+            tail_id=other._tail_id,
+        )
+        # copy whichever side already has ctx meta
+        combined._ctx_factory = self._ctx_factory or other._ctx_factory
+        combined._ctx_type    = self._ctx_type    or other._ctx_type
+        return combined
+
+    def __repr__(self) -> str:
+        """Return a string representation of the operation.
+        
+        Returns:
+            A string representation.
+        """
+        names = " >> ".join(spec.func.__name__
+                           for spec in self._graph.topological_order())
+        return f"<Operation {names}>"
 
     def validate(self) -> None:
+        """Validate the operation pipeline.
+        
+        Raises:
+            ValueError: If the pipeline is empty.
         """
-        Walk the upstream DAG and raise if any *required* parameter is
-        neither:
+        if not self._graph.nodes:
+            raise ValueError("Pipeline is empty.")
+        self._compile()
 
-        • satisfied by a constant in `bound_args` / `bound_kwargs`
-        • supplied by a **Template** entry that is a constant (≠ Placeholder)
-        • wired from an upstream edge
-        • given a default value in the function signature
+    def _compile(self) -> ExecutionPlan:
+        """Compile the operation graph into an execution plan.
+        
+        Returns:
+            The compiled execution plan.
         """
-        from fp_ops.placeholder import Placeholder
+        if self._plan is None:
+            self._plan = ExecutionPlan.from_graph(self._graph)
+        return self._plan
 
-        topo = self._g._upstream(self._s)
-
-        for spec in topo:
-            sig = spec.signature
-            params = [
-                name
-                for name, p in sig.parameters.items()
-                if p.kind
-                not in (
-                    inspect.Parameter.VAR_POSITIONAL,
-                    inspect.Parameter.VAR_KEYWORD,
-                )
-            ]
-
-            if not any(self._g._incoming_edges(Port(spec.id, p)) for p in params):
-                continue
-
-            tpl = spec.bound_template
-
-            for idx, pname in enumerate(params):
-                if pname in spec.bound_kwargs or idx < len(spec.bound_args):
-                    continue
-
-                if tpl is not None:
-                    if pname in tpl.kwargs:
-                        if not isinstance(tpl.kwargs[pname], Placeholder):
-                            continue
-                    elif idx < len(tpl.args):
-                        if not isinstance(tpl.args[idx], Placeholder):
-                            continue
-
-                if sig.parameters[pname].default is not inspect.Parameter.empty:
-                    continue
-
-                target = Port(spec.id, pname)
-                if any(
-                    e.target == target
-                    for edges in self._g._out_edges.values()
-                    for e in edges
-                ):
-                    continue
-
-                raise ValueError(
-                    f"Missing connection for required input '{pname}' on '{spec.id}'"
-                )
-
-    async def execute(self, *args: Any, **kwargs: Any):
+    async def execute(self, *args: Any, **kwargs: Any) -> Result[Any, Exception]:
         """
-        Merge any args/kwargs stored by a preceding ``pipeline(*args, **kw)``
-        call with the args/kwargs supplied directly to ``execute``.
+        Executes the operation pipeline, resolving the context as needed before delegating
+        to the executor.
+
+        Context resolution follows these rules (in order of precedence):
+
+            1. If the caller provides a ``context`` keyword argument, it is used directly.
+            2. If the pipeline was initialized with a context factory (``_ctx_factory``), the factory
+               is called to produce the context. The factory may be synchronous or asynchronous.
+            3. If neither of the above, no context is provided (``None``).
+
+        Args:
+            *args: Positional arguments to pass to the first operation in the pipeline.
+            **kwargs: Keyword arguments to pass to the first operation in the pipeline.
+                If ``context`` is present, it will be used as the context.
+
+        Returns:
+            Result[Any, Exception]: The result of executing the pipeline, wrapped in a Result.
+
+        Raises:
+            Exception: Any exception raised during context creation or pipeline execution
+                will be wrapped in an Error result.
         """
-        stored_args = getattr(self, "_call_args", ())
-        stored_kwargs = getattr(self, "_call_kwargs", {})
+        if "context" in kwargs:                        # explicit from caller
+            ctx = kwargs["context"]
+        elif self._ctx_factory is not None:            # implicit via factory
+            maybe_ctx = self._ctx_factory()
+            ctx = await maybe_ctx if inspect.isawaitable(maybe_ctx) else maybe_ctx
+        else:
+            ctx = None                                 # no context in play
 
-        merged_args = (*stored_args, *args)
-        merged_kwargs = {**stored_kwargs, **kwargs}
+        plan = self._compile()
+        # We forward original kwargs – the executor will inject the ctx
+        # keyword if it is missing but required by a node.
+        return await Executor(plan).run(*args, _context=ctx, **kwargs)
 
-        key = (merged_args, tuple(sorted(merged_kwargs.items())))
-        if self._plan_cache is None or getattr(self, "_plan_key", None) != key:
-            self._plan_cache = self._g.compile(self._s.id, merged_args, merged_kwargs)
-            self._plan_key = key
-        return await _default_executor.run(self._plan_cache)
-
-    # TODO: breaks our lazy execution model
-    def bind(
-        self, binder: Callable[[S], "Operation | Result | Awaitable | R"]
-    ) -> "Operation":
+    def _is_single_step(self) -> bool:
+        """Check if the operation is a single step.
+        
+        Returns:
+            True if the underlying graph contains exactly one node.
         """
-        `binder` may return:
-            • Operation        → chained in the DAG
-            • Result / Awaitable / plain value → lifted automatically
+        return len(self._graph.nodes) == 1
+    
+    def map(self, fn: Callable[[Any], Any]) -> "Operation":
+        """Apply a function to the successful result of this operation.
+        
+        Args:
+            fn: Function to apply to the successful value.
+            
+        Returns:
+            A new Operation representing the composition.
         """
+        return self >> Operation._from_function(fn)
 
-        async def _bind(x):
-            res = binder(x)
-            if isinstance(res, Operation):
-                # Execute immediately so we still end up with a single value
-                return await res.execute()
-            if isinstance(res, Result):
-                return res
-            if inspect.isawaitable(res):
-                return await res
-            return res
-
-        return self >> _lift_function(_bind)
-
-    def map(self, fn: Callable[[S], R]) -> "Operation":
-        """Pure transformation of the previous value."""
-        return self >> _lift_function(fn)
-
-    def filter(
-        self, pred: Callable[[S], bool], msg: str = "Value did not satisfy predicate"
-    ) -> "Operation":
-        async def _flt(x):
-            ok = (
-                await pred(x)
-                if inspect.iscoroutinefunction(pred)
-                else await asyncio.to_thread(pred, x)
-            )
-            return x if ok else Result.Error(ValueError(msg))
-
-        return self >> _lift_function(_flt)
-
-    def catch(self, handler: Callable[[Exception], S]) -> "Operation":
-        async def _handle(res: Result):
-            if res.is_ok():
-                return res  # already good
-            exc = res.error
+    def filter(self,
+               pred: Callable[[Any], bool],
+               err_msg: str | Exception = "filter predicate failed") -> "Operation":
+        """Filter values based on a predicate.
+        
+        Args:
+            pred: Predicate function that returns True to keep the value.
+            err_msg: Error message or exception to use when the predicate fails.
+            
+        Returns:
+            A new Operation that filters values.
+        """
+        async def _f(x):
             try:
-                val = handler(exc)
-                if inspect.isawaitable(val):
-                    val = await val
-                return val
-            except Exception as e:
-                return Result.Error(e)
+                if pred(x):
+                    return x
+                raise ValueError(err_msg)
+            except Exception as exc:        # pred exploded ➜ propagate as error
+                return Error(exc)
+        return self >> Operation._from_function(_f)
 
-        # `self` yields a Result object → map /unwrap/ with _handle
-        return self.map(lambda r: r).bind(_handle)
+    def tap(self, side: Callable[[Any], Any]) -> "Operation":
+        """Apply a side-effect function without changing the value.
+        
+        Args:
+            side: Function to apply for side effects.
+            
+        Returns:
+            A new Operation that applies the side effect.
+        """
+        def _t(x):
+            side(x)
+            return x
+        return self >> Operation._from_function(_t)
 
-    # TODO: breaks our lazy execution model
-    def retry(self, attempts: int = 3, delay: float = 0.1) -> "Operation":
-        async def _retry(x):
-            last: Exception | None = None
-            for _ in range(attempts):
-                res = await self.execute(x)  # run the inner op
+    def catch(self, handler: Callable[[Exception], Any]) -> "Operation":
+        """Handle errors that occur during operation execution.
+        
+        Args:
+            handler: Function that takes an exception and returns a value.
+            
+        Returns:
+            A new Operation that handles errors.
+        """
+        async def _catch(*args, **kwargs):
+            res = await self.execute(*args, **kwargs)
+            if res.is_ok():
+                return res
+            try:
+                return Ok(handler(res.error))
+            except Exception as exc:
+                return Error(exc)
+        return Operation._from_function(_catch)
+
+    def default_value(self, value: Any) -> "Operation":
+        """Provide a default value if this operation fails.
+        
+        Args:
+            value: Default value to use if the operation fails.
+            
+        Returns:
+            A new Operation that provides a default on failure.
+        """
+        async def _def(*args, **kwargs):
+            res = await self.execute(*args, **kwargs)
+            return res if res.is_ok() else Ok(value)
+        return Operation._from_function(_def)
+
+    def retry(self, *, attempts: int = 3, delay: float = 0.0, backoff: float = 0.0) -> "Operation":
+        """Retry the operation a specified number of times on failure.
+        
+        Args:
+            attempts: Maximum number of attempts.
+            delay: Initial delay between attempts in seconds.
+            backoff: Multiplier for the delay after each retry.
+            
+        Returns:
+            A new Operation that implements retry logic.
+        """
+        async def _retry(*args, _attempts=attempts, _delay=delay, _backoff=backoff, **kwargs):
+            err: Exception | None = None
+            for _ in range(_attempts):
+                res = await self.execute(*args, **kwargs)
                 if res.is_ok():
                     return res
-                last = res.error
-                await asyncio.sleep(delay)
-            return Result.Error(last or Exception("retry exhausted"))
+                err = res.error
+                if _delay:
+                    await asyncio.sleep(_delay)
+                if _backoff:
+                    _delay *= _backoff
+            return Error(err or RuntimeError("retry exhausted"))
+        return Operation._from_function(_retry)
 
-        return _lift_function(_retry)
+    def __and__(self, other: "Operation") -> "Operation":
+        """Run both operations in parallel and return a tuple of results.
+        
+        Args:
+            other: Another Operation to run in parallel.
+            
+        Returns:
+            A new Operation that runs both in parallel.
+            
+        Raises:
+            TypeError: If other is not an Operation.
+        """
+        if not isinstance(other, Operation):
+            raise TypeError("Operand to & must be an Operation.")
 
-    def tap(self, side: Callable[[S], Any]) -> "Operation":
-        async def _tap(x):
-            try:
-                await safe_await(side(x))
-            finally:
-                return x
+        async def _parallel(*args, **kwargs):
+            r1, r2 = await asyncio.gather(
+                self.execute(*args, **kwargs),
+                other.execute(*args, **kwargs),
+            )
+            if r1.is_error():
+                return r1
+            if r2.is_error():
+                return r2
+            return Ok((r1.default_value(None), r2.default_value(None)))
 
-        return self >> _lift_function(_tap)
+        parallel_op = Operation._from_function(_parallel)
+        parallel_op._ctx_factory = self._ctx_factory or getattr(other, "_ctx_factory", None)
+        parallel_op._ctx_type = self._ctx_type or getattr(other, "_ctx_type", None)
+        return parallel_op
 
-    @staticmethod
-    def unit(value: T) -> "Operation[Any, T, None]":
-        async def _const(*_a, **_kw):  # noqa: D401
-            return value
+    def __or__(self, other: "Operation") -> "Operation":
+        """Try this operation first, falling back to the other if this fails.
+        
+        Args:
+            other: Another Operation to use as fallback.
+            
+        Returns:
+            A new Operation representing the fallback logic.
+            
+        Raises:
+            TypeError: If other is not an Operation.
+        """
+        if not isinstance(other, Operation):
+            raise TypeError("Operand to | must be an Operation.")
 
-        return operation(_const)
+        async def _fallback(*args, **kwargs):
+            first = await self.execute(*args, **kwargs)
+            if first.is_ok():
+                return first
+            return await other.execute(*args, **kwargs)
 
-    def default_value(self, default: S) -> "Operation":
-        return self.catch(lambda _e: default)
+        fallback_op = Operation._from_function(_fallback)
+        fallback_op._ctx_factory = self._ctx_factory or getattr(other, "_ctx_factory", None)
+        fallback_op._ctx_type = self._ctx_type or getattr(other, "_ctx_type", None)
+        return fallback_op
 
-
-    # TODO: breaks our lazy execution model
     @classmethod
-    def sequence(cls, ops: Sequence["Operation"]) -> "Operation[Any, List[Any], None]":
-        async def _seq(*args, **kw):
-            out = []
-            for op in ops:
-                out.append(await op.execute(*args, **kw))
-            return out
+    def sequence(cls, ops: Sequence["Operation"]) -> "Operation":
+        """Create a pipeline from a sequence of operations.
+        
+        Args:
+            ops: A sequence of Operations to compose.
+            
+        Returns:
+            A new Operation representing the composition.
+            
+        Raises:
+            ValueError: If the sequence is empty.
+        """
+        if not ops:
+            raise ValueError("empty sequence")
+        pip = ops[0]
+        for op in ops[1:]:
+            pip = pip >> op
+        return pip
 
-        return operation(_seq)
-
-    # TODO: breaks our lazy execution model
     @classmethod
-    def combine(cls, **named: "Operation") -> "Operation[Any, Dict[str, Any], None]":
-        async def _cmb(*args, **kw):
-            res = {}
-            for k, op in named.items():
-                res[k] = await op.execute(*args, **kw)
-            return res
+    def combine(cls, **kw_ops: "Operation") -> "Operation":
+        """Combine multiple operations into one that returns a dictionary of results.
+        
+        Args:
+            **kw_ops: Named operations to combine.
+            
+        Returns:
+            A new Operation that runs all operations and returns their results as a dict.
+        """
+        async def _comb(val):
+            out: Dict[str, Any] = {}
+            for name, op in kw_ops.items():
+                res = await op.execute(val)
+                if res.is_error():
+                    return res
+                out[name] = res.default_value(None)
+            return Ok(out)
 
-        return operation(_cmb)
+        return Operation._from_function(_comb)
 
+    def bind(self,
+             builder: Callable[[Any], "Operation" | Callable[..., Any]]) -> "Operation":
+        """Chain this operation with another operation built from its result.
+        
+        Args:
+            builder: Function that takes the result of this operation and returns 
+                   another Operation or callable.
+            
+        Returns:
+            A new Operation representing the chained computation.
+            
+        Example:
+            >>> pipeline = subtract(10, 4).bind(lambda a: divide(a, 2))
+            >>> (await pipeline.execute()).unwrap()      # 3.0
+        """
+        # delay calling builder until we have the runtime value
+        async def _bind(x, *args, context=None, **kwargs):
+            # build the next operation (or wrap it if it's just a function)
+            nxt = builder(x)
+            if not isinstance(nxt, Operation):
+                # make **sure** the wrapped function is marked as context-aware
+                nxt = Operation._from_function(
+                    nxt,
+                    require_ctx=self._ctx_type is not None,
+                    ctx_type=self._ctx_type,
+                )
 
-@overload
-def operation(
-    func: Callable[P, R],
-    *,
-    context: bool = False,
-    context_type: Optional[Type[C]] = None,
-) -> Operation[Callable[P, R], S, C]: ...
+            # propagate context downstream in the *usual* way
+            if context is not None:
+                kwargs["context"] = context
+            return await nxt.execute(*args, **kwargs)
 
-
-@overload
-def operation(
-    func: None,
-    *,
-    context: bool = False,
-    context_type: Optional[Type[C]] = None,
-) -> Callable[[Callable[P, R]], Operation[Callable[P, R], S, C]]: ...
-
-
-def operation(
-    func: Optional[Callable[..., Any]] = None,
-    *,
-    context: bool = False,
-    context_type: Optional[Type[C]] = None,
-) -> Union[
-    Operation[Callable[P, R], S, C],
-    Callable[[Callable[P, R]], Operation[Callable[P, R], S, C]],
-]:
-    """Decorator / factory lifting a coroutine into an Operation."""
-
-    def _lift(f: Callable[..., Awaitable[Any]]):
-        graph = OpGraph()
-        spec = OpSpec(
-            id=graph.new_id(f.__name__),
-            func=f,
-            signature=inspect.signature(f),
-            requires_ctx="context" in inspect.signature(f).parameters,
-            ctx_type=None,
+        return self >> Operation._from_function(
+            _bind,
+            require_ctx=self._ctx_type is not None,
+            ctx_type=self._ctx_type,
         )
-        return Operation(graph, spec)
 
-    if func is None:
-        return _lift
-    return _lift(func)
+    def apply_cont(
+        self,
+        cont: Callable[[Any], Awaitable[Any] | "Operation" | Result],
+    ) -> "Operation":
+        """Apply a continuation to the successful result of this operation.
+        
+        Args:
+            cont: Continuation function that takes the unwrapped result and returns
+                 a raw/awaitable value, Result, or Operation.
+            
+        Returns:
+            A new Operation that applies the continuation.
+        """
+        async def _cont_wrapper(*args: Any, **kwargs: Any) -> Result[Any, Exception]:
+            res: Result[Any, Exception] = await self.execute(*args, **kwargs)
+            if res.is_error():
+                return res
+            val = res.default_value(None)
+            try:
+                out = cont(val)
+                if isinstance(out, Operation):
+                    return await out.execute()
+                if inspect.isawaitable(out):
+                    out = await out
+                return _wrap_result(out)
+            except Exception as exc:
+                return Error(exc)
 
+        return Operation._from_function(_cont_wrapper)
+
+    @classmethod
+    def with_context(
+        cls,
+        ctx_or_factory: BaseContext | Callable[[], BaseContext | Awaitable[BaseContext]],
+        *,
+        context_type: type[BaseContext],
+    ) -> "Operation":
+        """
+        Produce a single-step pipeline that **creates and yields** a context
+        instance.  The factory may be synchronous or asynchronous.
+        """
+        factory = ctx_or_factory if callable(ctx_or_factory) else lambda: ctx_or_factory
+
+        # the step just returns whatever context the executor injects
+        async def _yield(**kwargs):
+            return kwargs["context"]
+
+        op = cls._from_function(_yield, require_ctx=True, ctx_type=context_type)
+        op._ctx_factory = factory      # remember how to build the ctx
+        return op
+
+    def _clone(self) -> "Operation":
+        """
+        Duplicate this operation *and its internal graph*; every OpSpec receives
+        a brand-new UUID so the clone can live side-by-side with the original.
+        """
+        id_map: dict[str, str] = {}
+        new_graph = OpGraph()
+
+        # ---- nodes
+        for spec in self._graph.nodes:
+            new_id = uuid.uuid4().hex
+            id_map[spec.id] = new_id
+            new_graph.add_node(replace(spec, id=new_id))
+
+        # ---- edges
+        for e in self._graph._all_edges():
+            new_graph.add_edge(
+                Edge(
+                    source=replace(e.source, node_id=id_map[e.source.node_id]),
+                    target=replace(e.target, node_id=id_map[e.target.node_id]),
+                    type=e.type,
+                    transform=e.transform,
+                )
+            )
+
+        return Operation(
+            graph=new_graph,
+            head_id=id_map[self._head_id],
+            tail_id=id_map[self._tail_id],
+            ctx_factory=self._ctx_factory,
+            ctx_type=self._ctx_type,
+        )
+
+
+class _BoundCall:
+    """Stores runtime arguments until `.execute()` is invoked.
+    
+    This is an internal class used by Operation to defer execution.
+    """
+
+    __slots__ = ("_pipeline", "_args", "_kwargs")
+
+    def __init__(
+        self, *, pipeline: Operation, args: Tuple[Any, ...], kwargs: Dict[str, Any]
+    ):
+        """Initialize a BoundCall.
+        
+        Args:
+            pipeline: The Operation to be executed.
+            args: Positional arguments for the operation.
+            kwargs: Keyword arguments for the operation.
+        """
+        self._pipeline = pipeline
+        self._args = args
+        self._kwargs = kwargs
+
+    async def execute(self) -> Result[Any, Exception]:
+        """Execute the bound operation with the stored arguments.
+        
+        Returns:
+            A Result containing either the successful value or an exception.
+        """
+        return await self._pipeline.execute(*self._args, **self._kwargs)
+
+    def validate(self) -> None:
+        """Validate the underlying pipeline."""
+        self._pipeline.validate()
+
+    def __repr__(self) -> str:
+        """Return a string representation of the bound call.
+        
+        Returns:
+            A string representation.
+        """
+        return f"<BoundCall of {self._pipeline!r}>"
+    
+    # TODO: is this good practice or bad practice?
+    # adds the misconception that the pipeline is a function instead of a class 
+    # users might confuse instantiation with function call ex:
+    # pipeline = add >> add_one
+    # pipeline(1, 2) # this is wrong, it should be pipeline(1, 2).execute() OR pipeline.execute(1, 2)
+    def __call__(self, *args: Any, **kwargs: Any):
+        """Call the underlying pipeline with new arguments.
+        
+        Args:
+            *args: Positional arguments.
+            **kwargs: Keyword arguments.
+            
+        Returns:
+            A new BoundCall with the given arguments.
+        """
+        return self._pipeline(*args, **kwargs)
+    
+    def __await__(self):
+        """Make the bound call awaitable.
+        
+        Returns:
+            Awaitable that resolves to the execution result.
+        """
+        return self.execute().__await__()
+
+
+def operation(
+    _fn: Callable[..., Any] | None = None,
+    *,
+    context: bool = False,
+    context_type: type[BaseContext] | None = None,
+) -> Operation | Callable[[Callable[..., Any]], Operation]:
+    """
+    Decorator to create an Operation from a function, with optional context-awareness.
+
+    Usage:
+    ```python
+        @operation
+        def my_func(...):
+            ...
+
+        @operation(context=True)
+        def my_ctx_func(context, ...):
+            ...
+    ```
+
+    Args:
+        _fn: The function to wrap (used when decorator is applied without parentheses).
+        context (bool): If True, marks the operation as requiring a context argument.
+        context_type (type[BaseContext] | None): Optional type to enforce for the context.
+
+    Returns:
+        Operation | Callable[[Callable[..., Any]], Operation]:
+            - If used as @operation, returns an Operation wrapping the function.
+            - If used as @operation(...), returns a decorator that produces an Operation.
+
+    When used without arguments (bare @operation), wraps the function as a standard Operation.
+    When used with arguments (e.g., @operation(context=True)), wraps the function and marks it as context-aware,
+    enforcing that a context is provided at execution time.
+    """
+
+    def _decorate(fn: Callable[..., Any]) -> Operation:
+        if isinstance(fn, Operation):
+            return fn
+        return Operation._from_function(
+            fn,
+            require_ctx=context,
+            ctx_type=context_type,
+        )
+
+    if _fn is None:
+        return _decorate
+
+    return _decorate(_fn)
+
+
+def constant(value: Any) -> Operation:
+    """Create an Operation that always returns the specified value.
+    
+    Args:
+        value: The constant value to return.
+        
+    Returns:
+        An Operation that always returns the value.
+    """
+    @operation
+    async def _const(*_args: Any, **_kw: Any) -> Any:
+        return value
+
+    return _const
 
 @operation
-async def identity(x: Any) -> Any:
+def identity(value: Any) -> Any:
+    """Create an Operation that returns its input unchanged.
+    
+    Args:
+        value: The input value.
+        
+    Returns:
+        The same value.
     """
-    Return the input value unchanged.
-    """
-    return x
-
-
-def constant(value: Any) -> Operation[Any, Any, None]:
-    """
-    Return a constant value.
-    """
-    return Operation.unit(value)
-
-
-async def safe_await(value: Any) -> Any:
-    """Safely await a value, handling both awaitable and non-awaitable values."""
-    if inspect.isawaitable(value):
-        return await value
-    return value
+    return value 
