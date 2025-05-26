@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.3] - YYYY-MM-DD
+
+### Added
+- **Iterable Map Function**: Added `fp_ops.composition.map` for applying an operation to each item in an iterable, with support for concurrency control.
+
+### Changed
+- **Renamed `map` to `transform`**: The method `Operation.map` and the function `fp_ops.composition.map` (for transforming a single operation's output) have been renamed to `Operation.transform` and `fp_ops.composition.transform` respectively, to avoid confusion with the new iterable map.
+
 ## [0.2.2] - 2025-05-30
 
 ### Added
@@ -113,3 +121,5 @@ Initial release of fp-ops
 
 
 ### Changed
+
+

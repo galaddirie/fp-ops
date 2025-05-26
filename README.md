@@ -1,6 +1,6 @@
 # FP-Ops: Functional Programming Operations for Python
 
-[![PyPI version](https://img.shields.io/badge/pypi-v0.2.2-blue.svg)](https://pypi.org/project/fp-ops/)
+[![PyPI version](https://img.shields.io/badge/pypi-v0.2.3-blue.svg)](https://pypi.org/project/fp-ops/)
 [![Python versions](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/fp-ops/)
 [![codecov](https://codecov.io/gh/galaddirie/fp-ops/graph/badge.svg?token=8MHGFYBD8V)](https://codecov.io/gh/galaddirie/fp-ops)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -129,7 +129,7 @@ safe_divide = divide.catch(lambda e: 0 if isinstance(e, ValueError) else -1)
 Besides operators, FP-Ops provides various composition functions:
 
 ```python
-from fp_ops.composition import sequence, pipe, parallel, fallback
+from fp_ops.composition import sequence, pipe, parallel, fallback, map, transform
 
 # Run operations in sequence and collect all results
 results = await sequence(op1, op2, op3)
@@ -146,6 +146,13 @@ combined = await parallel(op1, op2, op3)
 
 # Try operations until one succeeds
 result = await fallback(op1, op2, op3)
+
+# Apply an operation to each item in an iterable
+# (e.g., transforming [1, 2, 3] to [2, 3, 4] if item_op increments by 1)
+mapped_results = await map(item_op, max_concurrency=5)([item1, item2, item3]) 
+
+# Transform the output of a single operation
+transformed_result = await transform(op1, lambda x: x * 2)
 ```
 
 ### Higher-Order Flow Operations
