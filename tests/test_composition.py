@@ -7,6 +7,7 @@ from fp_ops.context import BaseContext
 from fp_ops.operator import operation
 from expression import Result
 
+
 from fp_ops.composition import (
     sequence,
     pipe,
@@ -14,6 +15,7 @@ from fp_ops.composition import (
     parallel,
     fallback,
     transform,
+    map,
     filter,
     reduce,
     zip,
@@ -43,8 +45,30 @@ async def async_error(x):
 def sync_error(x):
     raise ValueError("Sync error")
 
+
+@operation
+def inc(x: int) -> int:
+    return x + 1
+
+
+@operation
+async def async_inc(x: int) -> int:
+    await asyncio.sleep(0.01)       # tiny delay to exercise concurrency path
+    return x + 1
+
+
+@operation
+def err_on_three(x: int) -> int:
+    if x == 3:
+        raise ValueError("boom")
+    return x
+
+
 class TestContext(BaseContext):
     value: str = "test"
+    label: str = "lab"
+
+
 
 @pytest.mark.asyncio
 async def test_sequence_basic():
@@ -889,3 +913,97 @@ async def test_gather_operations_with_bound_operations():
     assert all(r.is_ok() for r in results)
     assert results[0].default_value(None) == 6
     assert results[1].default_value(None) == 20
+
+
+
+
+@pytest.mark.asyncio
+async def test_map_iter_basic():
+    op = map(inc)
+    res: Result[List[int], Exception] = await op.execute([1, 2, 3])
+    assert res.is_ok()
+    assert res.default_value(None) == [2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_map_iter_generator_input():
+    op = map(inc)
+    res = await op.execute((i for i in range(4)))
+    assert res.is_ok()
+    assert res.default_value(None) == [1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_map_iter_async_inner():
+    op = map(async_inc)
+    res = await op.execute([0, 1])
+    assert res.is_ok()
+    assert res.default_value(None) == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_map_iter_error_propagates():
+    op = map(err_on_three)
+    res = await op.execute([1, 2, 3, 4])
+    assert res.is_error()
+    assert isinstance(res.error, ValueError)
+    assert str(res.error) == "boom"
+
+
+# ---------------------------------------------------------------------------
+# Context propagation
+# ---------------------------------------------------------------------------
+
+@operation(context=True, context_type=TestContext)
+def tag(x: int, **kwargs) -> str:
+    ctx = kwargs.get("context")
+    return f"{ctx.label}:{x}"
+
+
+@pytest.mark.asyncio
+async def test_map_iter_with_context():
+    ctx = TestContext(label="lab")
+    op = map(tag)
+    res = await op.execute([1, 2, 3], context=ctx)
+    assert res.is_ok()
+    assert res.default_value(None) == ["lab:1", "lab:2", "lab:3"]
+
+
+# ---------------------------------------------------------------------------
+# Concurrency limiter
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_map_iter_max_concurrency_respected():
+    current = 0          # number of in-flight calls
+    peak = 0
+    lock = asyncio.Lock()
+
+    @operation
+    async def tracked(x: int) -> int:
+        nonlocal current, peak
+        async with lock:
+            current += 1
+            peak = max(peak, current)
+        await asyncio.sleep(0.02)   # keep several coroutines alive together
+        async with lock:
+            current -= 1
+        return x
+
+    op = map(tracked, max_concurrency=2)
+    res = await op.execute(range(6))
+    assert res.is_ok()
+    assert res.default_value(None) == list(range(6))
+    assert peak <= 2, f"observed concurrency {peak} exceeds limit"
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_map_iter_empty_iterable():
+    op = map(inc)
+    res = await op.execute([])
+    assert res.is_ok()
+    assert res.default_value(None) == []

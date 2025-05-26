@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, List, Union, Callable, Tuple, Dict, TypeVar, Concatenate, cast
+from typing import Any, List, Union, Callable, Tuple, Dict, TypeVar, Concatenate, cast, Iterable, Awaitable
 
 from fp_ops.operator import Operation, identity, _ensure_async, P, R, S, Q
 from fp_ops.context import BaseContext
@@ -239,6 +239,64 @@ def transform(operation: Operation[P, T], func: Callable[[T], U]) -> Operation[P
     Map a function to an operation.
     """
     return operation.transform(func)
+
+
+def map(
+    item_op: Operation[[T], U],
+    *,
+    max_concurrency: int | None = None,
+) -> Operation[[Iterable[T]], List[U]]:
+    """
+    Lift a single-item `Operation` into one that runs on every element of an
+    iterable (such as a sequence, generator, or async-generator).
+
+    Args:
+        item_op: The `Operation` to apply to each element.
+        max_concurrency: The maximum number of operations to run concurrently.
+                         If None or 0, concurrency is unbounded (uses asyncio.gather).
+
+    Returns:
+        Operation[[Iterable[T]], List[U]]: An operation that takes an
+        `Iterable[T]` (with optional `context=...` kwarg) and returns a
+        `List[U]`.
+
+    Notes:
+        - Shares the same context instance with every mapped run.
+        - Propagates the first encountered error (maintaining fp-ops semantics).
+    """
+    async def _runner(
+        items: Iterable[T],
+        *,
+        context: BaseContext | None = None,
+    ) -> List[U]:
+        async def _exec(v: T) -> U:
+            exec_kwargs: dict[str, BaseContext] = (
+                {"context": context} if context is not None and item_op.context_type else {}
+            )
+
+            res: Result[U, Exception] = await (
+                item_op.execute(v, **exec_kwargs)
+            )
+            if res.is_error():
+                raise res.error
+            return res.default_value(None)
+
+        coro_iter = (_exec(v) for v in items)
+
+        if max_concurrency is None:
+            return await asyncio.gather(*coro_iter)
+
+        sem = asyncio.Semaphore(max_concurrency)
+        async def _bounded(coro: Awaitable[U]) -> U:
+            async with sem:
+                return await coro
+        return await asyncio.gather(*(_bounded(c) for c in coro_iter))  # noqa
+
+    return Operation._from_function(
+        _runner,
+        require_ctx=item_op.context_type is not None,
+        ctx_type=item_op.context_type,
+    )
 
 
 def filter(operation: Operation[P, T], func: Callable[[T], bool]) -> Operation[P, T]:
