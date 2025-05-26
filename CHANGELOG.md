@@ -1,6 +1,12 @@
 # Changelog
 
-## [0.2.3] - YYYY-MM-DD
+## [0.2.4] - 2025-05-26
+
+### Fixed
+- fix type errors.
+
+
+## [0.2.3] - 2025-05-26
 
 ### Added
 - **Iterable Map Function**: Added `fp_ops.composition.map` for applying an operation to each item in an iterable, with support for concurrency control.

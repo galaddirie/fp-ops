@@ -279,7 +279,7 @@ def map(
             )
             if res.is_error():
                 raise res.error
-            return res.default_value(None)
+            return res.default_value(cast(U, None))
 
         coro_iter = (_exec(v) for v in items)
 
