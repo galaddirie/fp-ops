@@ -227,27 +227,43 @@ class Executor:
         for idx, spec in enumerate(self._plan.order):
             # Build call-args
             if idx == 0:
-                # Start from template (pre-bound constants) then
-                # overlay runtime arguments, avoiding duplicates
-                args, kwargs = self._plan.arg_render[spec.id](None, None)
-                
-                # Special handling for single-step operations with placeholders
-                # If template has placeholders and runtime args are provided,
-                # check if we should use runtime args to render placeholders
-                if (spec.template.has_placeholders() and first_args and 
-                    len(self._plan.order) == 1):  # Single-step operation
-                    # Check if any kwargs contain nested placeholders
-                    has_nested = any(_has_nested_placeholder(v) for v in kwargs.values())
-                    if has_nested:
-                        # Use the first runtime arg to render placeholders
-                        rendered_args, rendered_kwargs = spec.template.render(first_args[0])
-                        # Update kwargs with rendered values
-                        for k, v in rendered_kwargs.items():
-                            if k in kwargs and _has_nested_placeholder(kwargs[k]):
-                                kwargs[k] = v
+                base_args_from_template, base_kwargs_from_template = self._plan.arg_render[spec.id](None, None)
+
+                if spec.template.has_placeholders() and first_args:
+                    rendered_args, rendered_kwargs = spec.template.render(first_args[0])
+                    
+                    args_for_merge = rendered_args
+                    kwargs_for_merge = rendered_kwargs
+
+                    template_args_had_placeholder = False
+                    # Check the original .args part of the current node's template for placeholders
+                    if isinstance(spec.template.args, tuple):
+                        for arg_val in spec.template.args:
+                            if _has_nested_placeholder(arg_val):
+                                template_args_had_placeholder = True
+                                break
+                    
+                    if template_args_had_placeholder:
+                        # Placeholder was in template.args, first_args[0] filled it positionally.
+                        # Remaining runtime positional args are from first_args[1:].
+                        rt_args_for_merge = first_args[1:]
+                    else:
+                        # Placeholder was likely in template.kwargs, or template.args was empty/had no placeholders.
+                        # first_args[0] is potentially still a valid runtime positional arg for _merge_first_call.
+                        rt_args_for_merge = first_args
+                        
+                    rt_kwargs_for_merge = first_kwargs
+                else:
+                    # No placeholders in spec.template to render with first_args[0], or no first_args provided.
+                    args_for_merge = base_args_from_template
+                    kwargs_for_merge = base_kwargs_from_template
+                    rt_args_for_merge = first_args
+                    rt_kwargs_for_merge = first_kwargs
                 
                 args, kwargs = _merge_first_call(
-                    spec.signature, args, kwargs, first_args, first_kwargs
+                    spec.signature,
+                    args_for_merge, kwargs_for_merge,
+                    rt_args_for_merge, rt_kwargs_for_merge
                 )
             else:
                 args, kwargs = self._plan.arg_render[spec.id](last_result, None)

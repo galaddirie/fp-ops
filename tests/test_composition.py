@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch, AsyncMock
 
 from fp_ops.context import BaseContext
 from fp_ops.operator import operation
+from fp_ops.primitives import _, Placeholder
 from expression import Result
 
 
@@ -1007,3 +1008,64 @@ async def test_map_iter_empty_iterable():
     res = await op.execute([])
     assert res.is_ok()
     assert res.default_value(None) == []
+
+
+@operation
+def placeholder_op(fixed_val: str, item: Any) -> str:
+    return f"{fixed_val}-{item}"
+
+
+@pytest.mark.asyncio
+async def test_map_iter_with_placeholder():
+    # Create an operation that has a placeholder for the item from the iterable
+    # and a pre-filled (bound) 'fixed_val'
+    op_with_placeholder = placeholder_op("PREFIX", _)
+    
+    map_op = map(op_with_placeholder)
+    res = await map_op.execute([1, "two", 3.0])
+    assert res.is_ok()
+    assert res.default_value(None) == ["PREFIX-1", "PREFIX-two", "PREFIX-3.0"]
+
+
+@pytest.mark.asyncio
+async def test_map_iter_with_placeholder_and_context():
+    ctx = TestContext(label="ID")
+
+    @operation(context=True, context_type=TestContext)
+    def placeholder_context_op(fixed_val: str, item: Any, context: TestContext) -> str:
+        return f"{context.label}:{fixed_val}-{item}"
+
+    op_with_placeholder = placeholder_context_op("STATIC", _)
+    
+    map_op = map(op_with_placeholder)
+    res = await map_op.execute([10, 20], context=ctx)
+    assert res.is_ok()
+    assert res.default_value(None) == ["ID:STATIC-10", "ID:STATIC-20"]
+
+
+@pytest.mark.asyncio
+async def test_map_iter_with_placeholder_and_concurrency():
+    op_with_placeholder = placeholder_op("ITEM", _)
+    
+    map_op = map(op_with_placeholder, max_concurrency=2)
+    res = await map_op.execute(list(range(5)))
+    assert res.is_ok()
+    assert res.default_value(None) == [f"ITEM-{i}" for i in range(5)]
+
+
+@pytest.mark.asyncio
+async def test_map_iter_placeholder_error_propagates():
+    @operation
+    def error_placeholder_op(item: Any, should_error: bool) -> Any:
+        if should_error and item == 3:
+            raise ValueError("Placeholder error at 3")
+        return item
+
+    # Bind 'should_error' to True, leave 'item' as placeholder
+    op_with_placeholder = error_placeholder_op(_, True)
+    
+    map_op = map(op_with_placeholder)
+    res = await map_op.execute([1, 2, 3, 4])
+    assert res.is_error()
+    assert isinstance(res.error, ValueError)
+    assert str(res.error) == "Placeholder error at 3"
