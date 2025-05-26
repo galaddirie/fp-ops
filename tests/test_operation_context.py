@@ -387,7 +387,7 @@ class TestContextWithOperators:
             context = kwargs["context"]
             return context.value
         
-        mapped_op = get_value.map(lambda v: f"Mapped: {v}")
+        mapped_op = get_value.transform(lambda v: f"Mapped: {v}")
         result = await mapped_op(context=test_context)
         assert result.is_ok()
         assert result.default_value(None) == "Mapped: test"

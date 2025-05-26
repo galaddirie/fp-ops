@@ -194,7 +194,7 @@ counter = loop_until(
 
 ### Methods
 
-- `operation.map(func)`: Apply a transformation to the output
+- `operation.transform(func)`: Apply a transformation to the output
 - `operation.filter(predicate)`: Filter the result using a predicate
 - `operation.bind(binder)`: Bind to another operation
 - `operation.catch(handler)`: Add error handling

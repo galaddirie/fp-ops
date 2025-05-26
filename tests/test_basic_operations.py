@@ -259,7 +259,7 @@ class TestFallbackPatterns:
 class TestTransformations:
     @pytest.mark.asyncio
     async def test_map_transformation(self, fetch_data):
-        get_first_user = fetch_data.map(
+        get_first_user = fetch_data.transform(
             lambda data: data.get("users", [{}])[0].get("name", "Unknown")
         )
         result = await get_first_user("https://api.example.com/users")

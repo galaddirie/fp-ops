@@ -91,7 +91,7 @@ class TestContinuationMonad:
     async def test_bind_chaining(self, fetch_item, fetch_category, fetch_related_items):
         get_item_details = fetch_item.bind(
             lambda item: fetch_category(item["category_id"]).bind(
-                lambda category: fetch_related_items(category["id"]).map(
+                lambda category: fetch_related_items(category["id"]).transform(
                     lambda related: {
                         "item": item,
                         "category": category,
@@ -242,11 +242,11 @@ class TestComplexTransformations:
                 "max": max(values)
             }
         
-        alternative_pipeline = load_data.map(
+        alternative_pipeline = load_data.transform(
             lambda items: [item for item in items if item.get("active", False)]
-        ).map(
+        ).transform(
             lambda items: [item.get("values", []) for item in items]
-        ).map(
+        ).transform(
             lambda value_lists: [value for sublist in value_lists if sublist for value in sublist]
         ).bind(calculate_stats)
         

@@ -234,11 +234,11 @@ def fallback(*operations: Operation[P, T]) -> Operation[P, T]:
     return Operation._from_function(fallback_op, ctx_type=context_type, require_ctx=context_type is not None)
 
 
-def map(operation: Operation[P, T], func: Callable[[T], U]) -> Operation[P, U]:
+def transform(operation: Operation[P, T], func: Callable[[T], U]) -> Operation[P, U]:
     """
     Map a function to an operation.
     """
-    return operation.map(func)
+    return operation.transform(func)
 
 
 def filter(operation: Operation[P, T], func: Callable[[T], bool]) -> Operation[P, T]:

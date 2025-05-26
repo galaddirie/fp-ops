@@ -411,7 +411,7 @@ class Operation(Generic[P, R]):
         """
         return len(self._graph.nodes) == 1
 
-    def map(self, fn: Callable[[R], S]) -> "Operation[P, S]":
+    def transform(self, fn: Callable[[R], S]) -> "Operation[P, S]":
         """Apply a function to the successful result of this operation.
 
         Args:

@@ -13,7 +13,7 @@ from fp_ops.composition import (
     compose,
     parallel,
     fallback,
-    map,
+    transform,
     filter,
     reduce,
     zip,
@@ -367,7 +367,7 @@ async def test_fallback_with_context():
 async def test_map_basic():
     base_op = operation(lambda x: x + 1)
     mapper = lambda x: x * 2
-    map_op = map(base_op, mapper)
+    map_op = transform(base_op, mapper)
     result = await map_op.execute(5)
     assert result.is_ok()
     assert result.default_value(None) == 12
@@ -376,7 +376,7 @@ async def test_map_basic():
 async def test_map_with_error_in_base():
     base_op = operation(sync_error)
     mapper = lambda x: x * 2
-    map_op = map(base_op, mapper)
+    map_op = transform(base_op, mapper)
     result = await map_op.execute(5)
     assert result.is_error()
     assert isinstance(result.error, ValueError)
@@ -387,7 +387,7 @@ async def test_map_with_error_in_mapper():
     base_op = operation(lambda x: x + 1)
     def error_mapper(x):
         raise ValueError("Mapper error")
-    map_op = map(base_op, error_mapper)
+    map_op = transform(base_op, error_mapper)
     result = await map_op.execute(5)
     assert result.is_error()
     assert isinstance(result.error, ValueError)
@@ -401,7 +401,7 @@ async def test_map_with_context():
         return f"{x}_{context.value}"
     def mapper(x):
         return f"mapped_{x}"
-    map_op = map(base_op, mapper)
+    map_op = transform(base_op, mapper)
     result = await map_op.execute(5, context=context)
     assert result.is_ok()
     assert result.default_value(None) == "mapped_5_test"
