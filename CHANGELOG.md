@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5] - 2025-05-26
+
+### Fixed
+- fixed map bugs
+- Added test coverage for the `map` function, including scenarios with placeholders, context integration, and concurrent execution.
+
+
 ## [0.2.4] - 2025-05-26
 
 ### Fixed
