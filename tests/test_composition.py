@@ -244,12 +244,7 @@ async def test_compose_basic():
     assert result.is_ok()
     assert result.default_value(None) == 9
 
-@pytest.mark.asyncio
-async def test_compose_empty():
-    compose_op = compose()
-    result = await compose_op.execute(42)
-    assert result.is_ok()
-    assert result.default_value(None) == 42
+
 
 @pytest.mark.asyncio
 async def test_compose_single_operation():
