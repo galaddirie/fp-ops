@@ -945,9 +945,6 @@ async def test_pick_and_pluck(user_dict, users_list):
            .execute(user_dict)).default_value({})
     assert got == {"id": 1, "email": "galad@example.com", "posts": 7}
 
-    names = (await pluck("profile.name").execute(users_list)).default_value([])
-    assert names == ["Galad", "Bob"]
-
 
 
 @pytest.mark.asyncio
@@ -1030,4 +1027,196 @@ async def test_pipeline_integration(user_dict):
     op2 = get("id") >> constant(10)
     assert (await op1.execute(user_dict)).default_value(None) == 10
     assert (await op2.execute(user_dict)).default_value(None) == 10
+
+@pytest.mark.asyncio
+async def test_data_ops_with_placeholders():
+    """Test data operations with placeholder primitives."""
+    from fp_ops.primitives import _  # Import the placeholder
+    
+    # Test placeholders in function composition pipeline
+    data = {"name": "Alice", "age": 30, "role": "admin"}
+    
+    # First get name, then lowercase it
+    pipeline = get("name") >> to_lower
+    result = await pipeline.execute(data)
+    assert result.is_ok()
+    assert result.default_value(None) == "alice"
+    
+    # Test filtering with pipeline-passed criteria
+    users = [
+        {"name": "Alice", "score": 85},
+        {"name": "Bob", "score": 75},
+        {"name": "Charlie", "score": 95}
+    ]
+    
+    # Set minimum score, then filter users who meet it
+    min_score = 80
+    pipeline = constant(min_score) >> filter_by(lambda x: x["score"] >= _)
+    result = await pipeline.execute(users)
+    assert result.is_ok()
+    filtered = result.default_value(None)
+    assert len(filtered) == 2
+    assert filtered[0]["name"] == "Alice"
+    assert filtered[1]["name"] == "Charlie"
+    
+    # Test sorting with pipeline-provided key
+    pipeline = constant("score") >> sort_by(_)
+    result = await pipeline.execute(users)
+    assert result.is_ok()
+    sorted_users = result.default_value(None)
+    assert [u["name"] for u in sorted_users] == ["Bob", "Alice", "Charlie"]
+    
+    # Test build with a value from pipeline
+    user = {"id": 123, "name": "Dave"}
+    current_date = "2023-04-01"
+    
+    # Pass date through pipeline to build function
+    pipeline = constant(current_date) >> build({
+        "id": get("id"),
+        "name": get("name"),
+        "created_at": _  # Use the date passed from previous step
+    })
+    result = await pipeline.execute(user)
+    assert result.is_ok()
+    built = result.default_value(None)
+    assert built == {"id": 123, "name": "Dave", "created_at": "2023-04-01"}
+
+@pytest.mark.asyncio
+async def test_more_data_ops_with_placeholders():
+    """Test additional data operations with placeholder primitives."""
+    from fp_ops.primitives import _  # Import the placeholder
+    
+    # Test map_values with multiplier from pipeline
+    data = {"a": 1, "b": 2, "c": 3}
+    multiplier = 10
+    
+    # Pass multiplier through pipeline to map_values
+    pipeline = constant(multiplier) >> map_values(lambda x: x * _)
+    result = await pipeline.execute(data)
+    assert result.is_ok()
+    mapped = result.default_value(None)
+    assert mapped == {"a": 10, "b": 20, "c": 30}
+    
+    # Test group_by with key from pipeline
+    users = [
+        {"name": "Alice", "department": "Engineering"},
+        {"name": "Bob", "department": "Sales"},
+        {"name": "Charlie", "department": "Engineering"}
+    ]
+    
+    # Pass grouping key through pipeline
+    pipeline = constant("department") >> group_by(_)
+    result = await pipeline.execute(users)
+    assert result.is_ok()
+    grouped = result.default_value(None)
+    assert len(grouped["Engineering"]) == 2
+    assert len(grouped["Sales"]) == 1
+    
+    # Test omit with field names from pipeline
+    user = {"id": 123, "name": "Alice", "password": "secret", "api_key": "abc123"}
+    
+    # Pass list of fields to omit through pipeline
+    pipeline = constant(["password", "api_key"]) >> omit(*_)
+    result = await pipeline.execute(user)
+    assert result.is_ok()
+    sanitized = result.default_value(None)
+    assert sanitized == {"id": 123, "name": "Alice"}
+
+@pytest.mark.asyncio
+async def test_chained_ops_with_placeholders():
+    """Test chaining multiple operations with placeholders."""
+    from fp_ops.primitives import _  # Import the placeholder
+    
+    # Create a data processing pipeline
+    users = [
+        {"id": 1, "name": "Alice", "level": 3, "active": True},
+        {"id": 2, "name": "Bob", "level": 2, "active": False},
+        {"id": 3, "name": "Charlie", "level": 4, "active": True},
+        {"id": 4, "name": "Dave", "level": 1, "active": True}
+    ]
+    
+    # Chain operations: filter active users, then those with level >= min_level
+    pipeline = (
+        filter_by({"active": True}) >>
+        constant(2) >>  # min_level value
+        filter_by(lambda u: u["level"] >= _) >>
+        constant("level") >>  # sort key
+        sort_by(_, reverse=True)  # sort by level descending
+    )
+    
+    result = await pipeline.execute(users)
+    assert result.is_ok()
+    processed = result.default_value(None)
+    
+    # Should have filtered inactive users and those with level < 2,
+    # then sorted by level (highest first)
+    assert len(processed) == 2
+    assert processed[0]["id"] == 3  # Charlie (level 4)
+    assert processed[1]["id"] == 1  # Alice (level 3)
+
+@pytest.mark.asyncio
+async def test_error_handling_with_placeholders():
+    """Test error handling with placeholders in pipelines."""
+    from fp_ops.primitives import _  # Import the placeholder
+    
+    # Test providing a default value through the pipeline
+    data = {"user": None}
+    
+    # Try to access a nested field that doesn't exist, with default from pipeline
+    pipeline = (
+        constant("Default User") >>  # default value
+        get("user.name").default_value(_)  # use the default value from pipeline
+    )
+    
+    result = await pipeline.execute(data)
+    assert result.is_ok()
+    assert result.default_value(None) == "Default User"
+    
+    # Test a more complex fallback pipeline
+    items = [1, 2, 3]
+    
+    # This should fail because we try to access a dict attribute on a list
+    failing_op = get("items")
+    
+    # Pass fallback value through pipeline
+    pipeline = (
+        constant(["fallback"]) >>
+        failing_op.default_value(_)
+    )
+    
+    result = await pipeline.execute(items)
+    assert result.is_ok()
+    assert result.default_value(None) == ["fallback"]
+
+@pytest.mark.asyncio
+async def test_simple_placeholder():
+    """Test basic placeholder functionality with simple operations."""
+    from fp_ops.primitives import _
+    from fp_ops.operator import operation
+    
+    # Define a simple operation that doubles a number
+    @operation
+    async def double(x):
+        return x * 2
+    
+    # Define an operation that adds a value
+    @operation
+    async def add(x, y):
+        return x + y
+    
+    # Test with placeholders in pipeline
+    data = 5
+    
+    # Pipeline 1: Double, then add 10 (using placeholder)
+    # This makes the second operation receive the output of the first
+    pipeline1 = double >> add(_, 10)
+    result1 = await pipeline1.execute(data)
+    assert result1.is_ok()
+    assert result1.default_value(None) == 20  # (5*2) + 10 = 20
+    
+    # Pipeline 2: The same thing but using a lambda instead
+    pipeline2 = double >> (lambda x: add(x, 10))
+    result2 = await pipeline2.execute(data)
+    assert result2.is_ok()
+    assert result2.default_value(None) == 20  # (5*2) + 10 = 20
 

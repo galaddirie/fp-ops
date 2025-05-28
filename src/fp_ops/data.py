@@ -3,7 +3,7 @@ Core data operations for FP-Ops that provide ergonomic data handling
 without expanding the DSL significantly.
 """
 from __future__ import annotations
-from typing import Any, Dict, List, Callable, TypeVar, Union, Tuple, Optional
+from typing import Any, Dict, List, Callable, TypeVar, Union, Tuple, Optional, cast, AsyncGenerator
 from functools import reduce
 from fp_ops import operation, Operation
 
@@ -182,7 +182,7 @@ def merge(*sources: Union[Dict[str, Any],
                 res = await src.execute(data)
                 update = res.default_value({}) if res.is_ok() else {}
             elif callable(src):
-                update = src(data) if data is not None else src()
+                update = src(data)
             else:
                 update = src
 
@@ -229,7 +229,7 @@ def filter_by(predicate: Union[Callable[[Any], bool], Dict[str, Any]]) -> Operat
     async def _filter_by(items: List[Any]) -> List[Any]:
         if isinstance(predicate, dict):
             # Dict matching
-            async def dict_match(item):
+            async def dict_match(item: Any) -> bool:
                 for key, value in predicate.items():
                     res = await get(key).execute(item)
                     if res.default_value(None) != value:
@@ -256,7 +256,7 @@ def group_by(key: Union[str, Callable[[Any], Any]]) -> Operation[[List[Any]], Di
     """
     @operation  # type: ignore[arg-type]
     async def _group_by(items: List[Any]) -> Dict[Any, List[Any]]:
-        groups = {}
+        groups: Dict[Any, List[Any]] = {}
         get_op = get(key) if isinstance(key, str) else None
         
         for item in items:
@@ -277,7 +277,7 @@ def group_by(key: Union[str, Callable[[Any], Any]]) -> Operation[[List[Any]], Di
     return _group_by
 
 
-def sort_by(key: Union[str, Callable[[Any], Any]], *, reverse=False
+def sort_by(key: Union[str, Callable[[Any], Any]], *, reverse: bool = False
             ) -> Operation[[List[Any]], List[Any]]:
     """
     Sort items by a key or key function.
@@ -302,7 +302,7 @@ def sort_by(key: Union[str, Callable[[Any], Any]], *, reverse=False
         # keep None values at the end regardless of direction
         non_null = [p for p in enriched if p[0] is not None]
         nulls    = [p for p in enriched if p[0] is None]
-        non_null.sort(key=lambda p: p[0], reverse=reverse)
+        non_null.sort(key=lambda p: cast(Any, p[0]), reverse=reverse)
         return [p[1] for p in (*non_null, *nulls)]
     return _sort_by
 
@@ -439,7 +439,7 @@ def count_by(key: Union[str, Callable[[Any], Any]]) -> Operation[[List[Any]], Di
     """
     @operation  # type: ignore[arg-type]
     async def _count_by(items: List[Any]) -> Dict[Any, int]: 
-        counts = {}
+        counts: Dict[Any, int] = {}
         get_op = get(key) if isinstance(key, str) else None
         
         for item in items:
@@ -474,7 +474,7 @@ def sum_by(key: Union[str, Callable[[Any], float]]) -> Operation[[List[Any]], fl
         
         for item in items:
             if callable(key) and not isinstance(key, str):
-                value = key(item)
+                value: Any = key(item)
             elif get_op:
                 res = await get_op.execute(item)
                 value = res.default_value(None) if res.is_ok() else None
@@ -562,7 +562,7 @@ def is_not_empty(data: Union[List, Dict, str]) -> bool:
 
 
 # Helper for async iteration
-async def _aiter(seq: List[Any]):
+async def _aiter(seq: List[Any]) -> AsyncGenerator[Any, None]:
     """Helper for async iteration over sequences."""
     for item in seq:
         yield item

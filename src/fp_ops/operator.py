@@ -22,6 +22,8 @@ from typing import (
     Union,
     Concatenate,
     overload,
+    Protocol,
+    runtime_checkable
 )
 from collections.abc import Generator
 
@@ -43,6 +45,7 @@ from fp_ops.primitives import (
 # Core generics
 P = ParamSpec("P")  # parameters of *this* operation
 Q = ParamSpec("Q")  # parameters of *another* operation
+T = TypeVar("T")  # input type of *this* operation
 R = TypeVar("R")  # return value of *this* operation
 S = TypeVar("S")  # return value of *another* operation
 E = TypeVar("E", bound=Exception)  # error type
@@ -83,8 +86,12 @@ def _wrap_result(value: Any) -> Result[Any, Exception]:
         return value
     return Ok(value)
 
+class UnaryOperation(Protocol[T, S]):
+    """Operation that takes T and returns S"""
+    async def execute(self, value: T, /) -> Result[S, Exception]: ...
 
-class Operation(Generic[P, R]):
+@runtime_checkable
+class Operation(Protocol, Generic[P, R]):
     """An Operation represents a composable unit of computation,
     which can be a single function or a pipeline of multiple steps.
 
@@ -191,7 +198,7 @@ class Operation(Generic[P, R]):
 
     def __call__(
         self, *args: P.args, **kwargs: P.kwargs
-    ) -> "_BoundCall[P, R]" | "Operation[P, R]":
+    ) -> "Operation[P, R]":
         """Call the operation with the given arguments.
 
         Args:
@@ -243,6 +250,11 @@ class Operation(Generic[P, R]):
         """
         return self.execute(*args, **kwargs).__await__()
 
+    @overload
+    def __rshift__(self, other: UnaryOperation[R, S]) -> "Operation[P, S]": ...
+    
+    @overload  
+    def __rshift__(self, other: "Operation[Concatenate[R, Q], S]") -> "Operation[P, S]": ...
     def __rshift__(self, other: "Operation[Concatenate[R, Q], S]") -> "Operation[P, S]":
         """Compose this operation with another operation.
 
@@ -771,7 +783,7 @@ class Operation(Generic[P, R]):
         return cast(Operation[P, R], self(*args, **kwargs))
 
 
-class _BoundCall(Generic[P, R]):
+class _BoundCall(Operation[P, R]):
     """Stores runtime arguments until `.execute()` is invoked.
 
     This is an internal class used by Operation to defer execution.

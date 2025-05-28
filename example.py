@@ -1,26 +1,32 @@
+from typing import Any
+
 if __name__ == "__main__":
     from fp_ops.operator import operation
     from fp_ops.placeholder import _
     import asyncio
 
     @operation
-    async def add(a, b):
+    async def add(a: int, b: int) -> int:
         return a + b
     
     @operation
-    async def add_one(a):
+    async def add_one(a: int) -> int:
         return a + 1
 
     @operation
-    async def mul(x, y):
+    async def mul(x: int, y: int) -> int:
         return x * y
 
     @operation
-    async def identity(value):
+    async def identity(value: Any) -> Any:
         return value
+    
+    @operation
+    def to_string(value: Any) -> str:
+        return str(value)
 
     # Simple chaining
-    pipeline = add >> add_one  # 
+    pipeline = add >> add_one >> to_string
     pipeline2 = add >> add_one(2)
     pipeline3 = add >> add_one(_)
 
