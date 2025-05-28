@@ -916,8 +916,8 @@ def operation(
 
     return _decorate(_fn)
 
-@operation # type: ignore[arg-type]
-def constant(value: R, *args: Any, **kwargs: Any) -> R: 
+@operation
+def constant(value: R, *args: Any, **kwargs: Any) -> R:
     """Create an Operation that always returns the specified value.
 
     Args:
@@ -929,8 +929,8 @@ def constant(value: R, *args: Any, **kwargs: Any) -> R:
 
     return value
 
-@operation # type: ignore[arg-type]
-def identity(value: R, *args: Any, **kwargs: Any) -> R: 
+@operation
+def identity(value: R, *args: Any, **kwargs: Any) -> R:
     """Create an Operation that returns its input unchanged.
 
     Args:
