@@ -113,6 +113,21 @@ def tap(
     """
     return op.tap(side_effect)
 
+@operation
+def when(condition: Callable[[Any], bool], transform: Callable[[Any], Any]) -> Any:
+    """
+    Conditionally apply a transformation.
+    
+    Example:
+        when(lambda x: x > 0, lambda x: x * 2)(value)
+    """
+    def _when(data: Any) -> Any:
+        if condition(data):
+            return transform(data)
+        return data
+    
+    return _when
+
 def branch(
     condition: Union[Callable[[R], bool], Operation[P, bool]],
     true_op: Operation[Concatenate[R, Q], S],

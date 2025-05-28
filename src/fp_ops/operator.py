@@ -916,8 +916,8 @@ def operation(
 
     return _decorate(_fn)
 
-
-def constant(value: R) -> Operation[..., R]:
+@operation
+def constant(value: R, *args: Any, **kwargs: Any) -> R:
     """Create an Operation that always returns the specified value.
 
     Args:
@@ -927,15 +927,10 @@ def constant(value: R) -> Operation[..., R]:
         An Operation that always returns the value.
     """
 
-    @operation
-    async def _const(*_args: Any, **_kw: Any) -> Any:
-        return value
-
-    return _const
-
+    return value
 
 @operation
-def identity(value: Any) -> Any:
+def identity(value: R, *args: Any, **kwargs: Any) -> R:
     """Create an Operation that returns its input unchanged.
 
     Args:
