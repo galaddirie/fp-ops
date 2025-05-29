@@ -102,7 +102,7 @@ class Operation(Protocol, Generic[P, R]):
     # Calling an *un-bound* Operation *executes* it immediately:
     >>> await add.execute(a=1, b=2)
 
-    # Calling a *pipeline* returns a `_BoundCall` proxy that stores runtime
+    # Calling a *pipeline* returns a bound Operation that stores runtime
     # arguments until you finally ask for `.execute()`:
     >>> await (add >> add_one)(1, 2).execute()
 
@@ -126,6 +126,8 @@ class Operation(Protocol, Generic[P, R]):
         tail_id: str,
         ctx_factory: Callable[[], BaseContext | Awaitable[BaseContext]] | None = None,
         ctx_type: type[BaseContext] | None = None,
+        bound_args: Tuple[Any, ...] | None = None,
+        bound_kwargs: Dict[str, Any] | None = None,
     ):
         """Initialize an Operation.
 
@@ -140,6 +142,8 @@ class Operation(Protocol, Generic[P, R]):
         self._plan: ExecutionPlan | None = None
         self._ctx_factory = ctx_factory
         self._ctx_type = ctx_type
+        self._bound_args = bound_args
+        self._bound_kwargs = bound_kwargs
 
     # BACK-COMPAT SHIMS
     @property
@@ -154,6 +158,10 @@ class Operation(Protocol, Generic[P, R]):
         We treat an op as bound when its head-template contains *no* placeholders
         but does contain constants (positional or keyword).
         """
+        # Check if we have deferred bound arguments
+        if self._bound_args is not None or self._bound_kwargs is not None:
+            return True
+            
         head = self._graph._nodes[self._head_id]
         tpl = head.template
         # TODO: should placeholders be considered bound?
@@ -206,7 +214,7 @@ class Operation(Protocol, Generic[P, R]):
             **kwargs: Keyword arguments.
 
         Returns:
-            Either a new Operation (if single step) or a _BoundCall.
+            Either a new Operation (if single step) or a bound Operation.
         """
         if self._is_single_step():
             first_step_id = self._head_id
@@ -238,7 +246,16 @@ class Operation(Protocol, Generic[P, R]):
                 ctx_type=self._ctx_type,
             )
 
-        return _BoundCall(pipeline=self, args=args, kwargs=kwargs)
+        # For pipelines, return a new Operation with bound arguments
+        return Operation(
+            graph=self._graph,
+            head_id=self._head_id,
+            tail_id=self._tail_id,
+            ctx_factory=self._ctx_factory,
+            ctx_type=self._ctx_type,
+            bound_args=args,
+            bound_kwargs=kwargs,
+        )
 
     def __await__(
         self, *args: P.args, **kwargs: P.kwargs
@@ -781,80 +798,6 @@ class Operation(Protocol, Generic[P, R]):
             A new Operation with merged arguments.
         """
         return cast(Operation[P, R], self(*args, **kwargs))
-
-
-class _BoundCall(Operation[P, R]):
-    """Stores runtime arguments until `.execute()` is invoked.
-
-    This is an internal class used by Operation to defer execution.
-    """
-
-    __slots__ = ("_pipeline", "_args", "_kwargs")
-
-    def __init__(
-        self,
-        *,
-        pipeline: Operation[P, R],
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-    ):
-        """Initialize a BoundCall.
-
-        Args:
-            pipeline: The Operation to be executed.
-            args: Positional arguments for the operation.
-            kwargs: Keyword arguments for the operation.
-        """
-        self._pipeline = pipeline
-        self._args = args
-        self._kwargs = kwargs
-
-    async def execute(self) -> Result[R, Exception]:
-        """Execute the bound operation with the stored arguments.
-
-        Returns:
-            A Result containing either the successful value or an exception.
-        """
-        return await self._pipeline.execute(*self._args, **self._kwargs)
-
-    def validate(self) -> None:
-        """Validate the underlying pipeline."""
-        self._pipeline.validate()
-
-    def __repr__(self) -> str:
-        """Return a string representation of the bound call.
-
-        Returns:
-            A string representation.
-        """
-        return f"<BoundCall of {self._pipeline!r}>"
-
-    # TODO: is this good practice or bad practice?
-    # adds the misconception that the pipeline is a function instead of a class
-    # users might confuse instantiation with function call ex:
-    # pipeline = add >> add_one
-    # pipeline(1, 2) # this is wrong, it should be pipeline(1, 2).execute() OR pipeline.execute(1, 2)
-    def __call__(
-        self, *args: Any, **kwargs: Any
-    ) -> Any:
-        """Call the underlying pipeline with new arguments.
-
-        Args:
-            *args: Positional arguments.
-            **kwargs: Keyword arguments.
-
-        Returns:
-            A new BoundCall with the given arguments.
-        """
-        return self._pipeline(*args, **kwargs)
-
-    def __await__(self) -> Generator[Any, None, Result[R, Exception]]:
-        """Make the bound call awaitable.
-
-        Returns:
-            Awaitable that resolves to the execution result.
-        """
-        return self.execute().__await__()
 
 
 @overload
