@@ -86,12 +86,9 @@ def _wrap_result(value: Any) -> Result[Any, Exception]:
         return value
     return Ok(value)
 
-class UnaryOperation(Protocol[T, S]):
-    """Operation that takes T and returns S"""
-    async def execute(self, value: T, /) -> Result[S, Exception]: ...
 
-@runtime_checkable
-class Operation(Protocol, Generic[P, R]):
+
+class Operation(Generic[P, R]):
     """An Operation represents a composable unit of computation,
     which can be a single function or a pipeline of multiple steps.
 
@@ -135,6 +132,10 @@ class Operation(Protocol, Generic[P, R]):
             graph: The operation graph.
             head_id: ID of the first operation in the pipeline.
             tail_id: ID of the last operation in the pipeline.
+            ctx_factory: Optional context factory.
+            ctx_type: Optional context type.
+            bound_args: Bound positional arguments (for deferred execution).
+            bound_kwargs: Bound keyword arguments (for deferred execution).
         """
         self._graph = graph
         self._head_id = head_id
@@ -170,11 +171,11 @@ class Operation(Protocol, Generic[P, R]):
     @classmethod
     def _from_function(
         cls,
-        fn: Callable[P2, Awaitable[R2]] | Callable[P2, R2],
+        fn: Callable[..., Any],
         *,
         require_ctx: bool = False,
         ctx_type: type[BaseContext] | None = None,
-    ) -> "Operation[P2, R2]":
+    ) -> "Operation[..., Any]":
         """Create an Operation from a function.
 
         Args:
@@ -194,14 +195,11 @@ class Operation(Protocol, Generic[P, R]):
 
         g = OpGraph()
         g.add_node(spec)
-        return cast(
-            "Operation[P2, R2]",
-            cls(
-                graph=g,
-                head_id=spec.id,
-                tail_id=spec.id,
-                ctx_type=ctx_type,  # ← preserve the context metadata
-            ),
+        return cls(
+            graph=g,
+            head_id=spec.id,
+            tail_id=spec.id,
+            ctx_type=ctx_type,  # ← preserve the context metadata
         )
 
     def __call__(
@@ -258,20 +256,24 @@ class Operation(Protocol, Generic[P, R]):
         )
 
     def __await__(
-        self, *args: P.args, **kwargs: P.kwargs
+        self,
+        *args: Any,
+        **kwargs: Any,
     ) -> Generator[Any, None, Result[R, Exception]]:
         """Make the operation awaitable.
 
         Returns:
             Awaitable that resolves to the execution result.
         """
+        # If we have bound arguments, use them
+        if self._bound_args is not None or self._bound_kwargs is not None:
+            args = self._bound_args or ()
+            kwargs = self._bound_kwargs or {}
+            return self.execute(*args, **kwargs).__await__()
+        # Otherwise, execute with no arguments
         return self.execute(*args, **kwargs).__await__()
 
-    @overload
-    def __rshift__(self, other: UnaryOperation[R, S]) -> "Operation[P, S]": ...
-    
-    @overload  
-    def __rshift__(self, other: "Operation[Concatenate[R, Q], S]") -> "Operation[P, S]": ...
+
     def __rshift__(self, other: "Operation[Concatenate[R, Q], S]") -> "Operation[P, S]":
         """Compose this operation with another operation.
 
@@ -310,6 +312,11 @@ class Operation(Protocol, Generic[P, R]):
         Returns:
             A string representation.
         """
+        if self._bound_args is not None or self._bound_kwargs is not None:
+            names = " >> ".join(
+                spec.func.__name__ for spec in self._graph.topological_order()
+            )
+            return f"<BoundOperation {names}>"
         names = " >> ".join(
             spec.func.__name__ for spec in self._graph.topological_order()
         )
@@ -354,7 +361,7 @@ class Operation(Protocol, Generic[P, R]):
         async def _yield(**kwargs: Any) -> BaseContext:
             return cast(BaseContext, kwargs["context"])
 
-        op: Operation[..., BaseContext] = cls._from_function(  # type: ignore[arg-type]
+        op: Operation[..., BaseContext] = cls._from_function(
             _yield, require_ctx=True, ctx_type=context_type
         )
         op._ctx_factory = factory  # remember how to build the ctx
@@ -398,6 +405,8 @@ class Operation(Protocol, Generic[P, R]):
         Executes the operation pipeline, resolving the context as needed before delegating
         to the executor.
 
+        If this operation has bound arguments, they are used instead of the provided arguments.
+
         Context resolution follows these rules (in order of precedence):
 
             1. If the caller provides a ``context`` keyword argument, it is used directly.
@@ -417,6 +426,11 @@ class Operation(Protocol, Generic[P, R]):
             Exception: Any exception raised during context creation or pipeline execution
                 will be wrapped in an Error result.
         """
+        # Use bound arguments if they exist
+        if self._bound_args is not None or self._bound_kwargs is not None:
+            args = self._bound_args or () # type: ignore
+            kwargs = self._bound_kwargs or {} # type: ignore
+
         if "context" in kwargs:  # explicit from caller
             ctx = kwargs["context"]
         elif self._ctx_factory is not None:  # implicit via factory
@@ -502,8 +516,8 @@ class Operation(Protocol, Generic[P, R]):
                 pass
             return x
 
-        TapStep: Operation[[R], R] = Operation._from_function(
-            cast(Callable[[R], Awaitable[R]], _t),
+        TapStep: Operation[..., R] = Operation._from_function(
+            _t,
             require_ctx=(needs_ctx or self._ctx_type is not None),
             ctx_type=self._ctx_type,
         )
@@ -735,7 +749,7 @@ class Operation(Protocol, Generic[P, R]):
                 raise result.error
             return cast(S, result.default_value(None))
 
-        op: Operation[Concatenate[R, Q], S] = Operation._from_function(  # type: ignore
+        op: Operation[Concatenate[R, Q], S] = Operation._from_function(
             _bind_wrapper,
             require_ctx=self._ctx_type is not None,
             ctx_type=self._ctx_type,
@@ -812,18 +826,15 @@ def operation(
     *,
     context: bool = False,
     context_type: type[BaseContext] | None = None,
-) -> Callable[[Callable[P, Awaitable[R]] | Callable[P, R]], Operation[P, R]]: ...
+) -> Callable[[Callable[..., Any]], Operation[..., Any]]: ...
 
 
 def operation(
-    _fn: Callable[P, Awaitable[R]] | Callable[P, R] | None = None,
+    _fn: Callable[..., Any] | None = None,
     *,
     context: bool = False,
     context_type: type[BaseContext] | None = None,
-) -> (
-    Operation[P, R]
-    | Callable[[Callable[P, Awaitable[R]] | Callable[P, R]], Operation[P, R]]
-):
+) -> Operation[..., Any] | Callable[[Callable[..., Any]], Operation[..., Any]]:
     """
     Decorator to create an Operation from a function, with optional context-awareness.
 
@@ -853,7 +864,7 @@ def operation(
     enforcing that a context is provided at execution time.
     """
 
-    def _decorate(fn: Callable[P, Awaitable[R]] | Callable[P, R]) -> Operation[P, R]:
+    def _decorate(fn: Callable[..., Any]) -> Operation[..., Any]:
         if isinstance(fn, Operation):
             return fn
         impl = Operation._from_function(
@@ -871,7 +882,7 @@ def operation(
 
     return _decorate(_fn)
 
-@operation # type: ignore[arg-type]
+@operation
 def constant(value: R, *args: Any, **kwargs: Any) -> R: 
     """Create an Operation that always returns the specified value.
 
@@ -884,7 +895,7 @@ def constant(value: R, *args: Any, **kwargs: Any) -> R:
 
     return value
 
-@operation # type: ignore[arg-type]
+@operation
 def identity(value: R, *args: Any, **kwargs: Any) -> R: 
     """Create an Operation that returns its input unchanged.
 

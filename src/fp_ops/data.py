@@ -72,7 +72,7 @@ def pick(*keys: str) -> Operation[[Any], Dict[str, Any]]:
         pick("id", "name", "email")(user_dict)
         # Returns: {"id": 1, "name": "John", "email": "john@example.com"}
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     async def _pick(data: Any) -> Dict[str, Any]:
         result = {}
         
@@ -105,7 +105,7 @@ def pluck(key: str) -> Operation[[List[Any]], List[Any]]:
         # pluck_name = pluck("name")
         # names = await pluck_name.execute(users_list)  # Result: ["Alice", "Bob"]
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     async def _pluck(items: List[Any]) -> List[Any]:
         get_op = get(key)
         result = []
@@ -133,7 +133,7 @@ def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
             "isActive": True
         })(data)
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     async def _build(data: Any) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
 
@@ -173,7 +173,7 @@ def merge(*sources: Union[Dict[str, Any],
             {"processed": True}
         )(data)
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     async def _merge(data: Any) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
 
@@ -206,7 +206,7 @@ def update(update_values: Dict[str, Any]) -> Operation[[Dict[str, Any]], Dict[st
         # updated_dict = await updater.execute(source_dict)
         # Result: {"a": 1, "b": 3, "c": 4}
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     def _update_inner(source: Dict[str, Any]) -> Dict[str, Any]:
         return {**source, **update_values}
     return _update_inner
@@ -225,7 +225,7 @@ def filter_by(predicate: Union[Callable[[Any], bool], Dict[str, Any]]) -> Operat
         filter_by(lambda x: x["age"] > 18)(users)
         filter_by({"status": "active"})(users)
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     async def _filter_by(items: List[Any]) -> List[Any]:
         if isinstance(predicate, dict):
             # Dict matching
@@ -254,7 +254,7 @@ def group_by(key: Union[str, Callable[[Any], Any]]) -> Operation[[List[Any]], Di
         # group_by_year = group_by(lambda x: x["date"].year)
         # grouped_events = await group_by_year.execute(events)
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     async def _group_by(items: List[Any]) -> Dict[Any, List[Any]]:
         groups: Dict[Any, List[Any]] = {}
         get_op = get(key) if isinstance(key, str) else None
@@ -287,7 +287,7 @@ def sort_by(key: Union[str, Callable[[Any], Any]], *, reverse: bool = False
         # sort_by_name = sort_by("name")
         # sorted_users = await sort_by_name.execute(users_list)
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     async def _sort_by(items: List[Any]) -> List[Any]:
         if callable(key) and not isinstance(key, str):
             return sorted(items, key=key, reverse=reverse)
@@ -315,7 +315,7 @@ def unique_by(key: Union[str, Callable[[Any], Any]]) -> Operation[[List[Any]], L
         # unique_by_email_op = unique_by("email")
         # unique_users = await unique_by_email_op.execute(users_list) # Remove duplicate users by email
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     async def _unique_by(items: List[Any]) -> List[Any]:
         seen = set()
         result = []
@@ -351,7 +351,7 @@ def map_values(fn: Callable[[Any], Any]) -> Operation[[Dict[str, Any]], Dict[str
         map_values(str.upper)({"a": "hello", "b": "world"})
         # Returns: {"a": "HELLO", "b": "WORLD"}
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     async def _map_values(data: Dict[str, Any]) -> Dict[str, Any]:
         result = {}
         for k, v in data.items():
@@ -373,7 +373,7 @@ def map_keys(fn: Callable[[str], str]) -> Operation[[Dict[str, Any]], Dict[str, 
         map_keys(str.upper)({"name": "John", "age": 30})
         # Returns: {"NAME": "John", "AGE": 30}
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     async def _map_keys(data: Dict[str, Any]) -> Dict[str, Any]:
         result = {}
         for k, v in data.items():
@@ -396,7 +396,7 @@ def rename(mapping: Dict[str, str]) -> Operation[[Dict[str, Any]], Dict[str, Any
     Example:
         rename({"user_id": "id", "user_name": "name"})(data)
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     def _rename(data: Dict[str, Any]) -> Dict[str, Any]:
         result = {}
         
@@ -416,7 +416,7 @@ def omit(*keys: str) -> Operation[[Dict[str, Any]], Dict[str, Any]]:
     Example:
         omit("password", "secret")(user_data)
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     def _omit(data: Dict[str, Any]) -> Dict[str, Any]:
         return {k: v for k, v in data.items() if k not in keys}
     
@@ -437,7 +437,7 @@ def count_by(key: Union[str, Callable[[Any], Any]]) -> Operation[[List[Any]], Di
         # counts = await count_by_status_op.execute(orders_list)
         # Returns: {"pending": 2, "completed": 1}
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     async def _count_by(items: List[Any]) -> Dict[Any, int]: 
         counts: Dict[Any, int] = {}
         get_op = get(key) if isinstance(key, str) else None
@@ -467,7 +467,7 @@ def sum_by(key: Union[str, Callable[[Any], float]]) -> Operation[[List[Any]], fl
         # sum_by_amount_op = sum_by("amount")
         # total_amount = await sum_by_amount_op.execute(transactions_list)
     """
-    @operation  # type: ignore[arg-type]
+    @operation
     async def _sum_by(items: List[Any]) -> float:
         total = 0.0
         get_op = get(key) if isinstance(key, str) else None
@@ -497,19 +497,19 @@ def sum_by(key: Union[str, Callable[[Any], float]]) -> Operation[[List[Any]], fl
 # Common transformations as operations
 # ============================================================================
 
-@operation  # type: ignore[arg-type]
+@operation
 def to_lower(text: str) -> str:
     """Convert string to lowercase."""
     return text.lower() if isinstance(text, str) else text
 
 
-@operation  # type: ignore[arg-type]
+@operation
 def to_upper(text: str) -> str:
     """Convert string to uppercase."""
     return text.upper() if isinstance(text, str) else text
 
 
-@operation  # type: ignore[arg-type]
+@operation
 def strip(text: str) -> str:
     """Strip whitespace from string."""
     return text.strip() if isinstance(text, str) else text
@@ -517,7 +517,7 @@ def strip(text: str) -> str:
 
 def split(delimiter: str = " ") -> Operation[[str], List[str]]:
     """Split string by delimiter."""
-    @operation  # type: ignore[arg-type]
+    @operation
     def _split(text: str) -> List[str]:
         return text.split(delimiter) if isinstance(text, str) else []
     return _split
@@ -525,37 +525,37 @@ def split(delimiter: str = " ") -> Operation[[str], List[str]]:
 
 def join(delimiter: str = " ") -> Operation[[List[Any]], str]:
     """Join list of strings."""
-    @operation  # type: ignore[arg-type]
+    @operation
     def _join(items: List[Any]) -> str:
         return delimiter.join(str(item) for item in items)
     return _join
 
 
-@operation  # type: ignore[arg-type]
+@operation
 def keys(data: Dict[str, Any]) -> List[str]:
     """Get dictionary keys."""
     return list(data.keys()) if isinstance(data, dict) else []
 
 
-@operation  # type: ignore[arg-type]
+@operation
 def values(data: Dict[str, Any]) -> List[Any]:
     """Get dictionary values."""
     return list(data.values()) if isinstance(data, dict) else []
 
 
-@operation  # type: ignore[arg-type]
+@operation
 def length(data: Union[List, Dict, str]) -> int:
     """Get length of list, dict, or string."""
     return len(data) if hasattr(data, '__len__') else 0
 
 
-@operation  # type: ignore[arg-type]
+@operation
 def is_empty(data: Union[List, Dict, str]) -> bool:
     """Check if list, dict, or string is empty."""
     return len(data) == 0 if hasattr(data, '__len__') else True
 
 
-@operation  # type: ignore[arg-type]
+@operation
 def is_not_empty(data: Union[List, Dict, str]) -> bool:
     """Check if list, dict, or string is not empty."""
     return len(data) > 0 if hasattr(data, '__len__') else False

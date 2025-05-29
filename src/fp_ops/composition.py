@@ -540,8 +540,7 @@ async def gather_operations(
 
         if args is not None or kwargs is not None:
             maybe = op(*args or [], **op_kwargs)
-            # Both Operation and _BoundCall expose .execute()
-            tasks.append(maybe.execute(**op_kwargs))  # type: ignore[attr-defined]
+            tasks.append(maybe.execute(**op_kwargs))
             continue
 
         if (
