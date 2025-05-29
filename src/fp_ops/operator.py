@@ -455,6 +455,7 @@ class Operation(Generic[P, R]):
         return len(self._graph.nodes) == 1
 
     def transform(self, fn: Callable[[R], S]) -> "Operation[P, S]":
+
         """Apply a function to the successful result of this operation.
 
         Args:
@@ -596,7 +597,7 @@ class Operation(Generic[P, R]):
 
         return Operation._from_function(_retry)
 
-    def __and__(self, other: "Operation[P, S]") -> "Operation[P, tuple[R, S]]":
+    def __and__(self, other: Operation[P, S]) -> Operation[P, Tuple[R, S]]:
         """Run both operations in parallel and return a tuple of results.
 
         Args:
@@ -630,7 +631,7 @@ class Operation(Generic[P, R]):
         parallel_op._ctx_type = self._ctx_type or getattr(other, "_ctx_type", None)
         return parallel_op
 
-    def __or__(self, other: "Operation[P, R]") -> "Operation[P, R]":
+    def __or__(self, other: Operation[P, R]) -> Operation[P, R]:
         """Try this operation first, falling back to the other if this fails.
 
         Args:
