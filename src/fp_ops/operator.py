@@ -454,48 +454,6 @@ class Operation(Generic[P, R]):
         """
         return len(self._graph.nodes) == 1
 
-    def transform(self, fn: Callable[[R], S]) -> "Operation[P, S]":
-
-        """Apply a function to the successful result of this operation.
-
-        Args:
-            fn: Function to apply to the successful value.
-
-        Returns:
-            A new Operation representing the composition.
-        """
-        return self >> Operation._from_function(fn)
-
-    def filter(
-        self,
-        pred: Callable[[R], bool],
-        err_msg: str | Exception = "filter predicate failed",
-    ) -> "Operation[P, R]":
-        """Filter values based on a predicate.
-
-        Args:
-            pred: Predicate function that returns True to keep the value.
-            err_msg: Error message or exception to use when the predicate fails.
-
-        Returns:
-            A new Operation that filters values.
-        """
-
-        # Wrap the filter function to make it compatible with _from_function
-        async def _filter_wrapper(*args: Any, **kwargs: Any) -> R:
-            result = await self.execute(*args, **kwargs)
-            if result.is_error():
-                raise result.error
-
-            value = cast(R, result.default_value(None))
-            if not pred(value):
-                if isinstance(err_msg, Exception):
-                    raise err_msg
-                raise ValueError(err_msg)
-            return value
-
-        return Operation._from_function(_filter_wrapper)
-
     def tap(self, side: Callable[[R], Any]) -> "Operation[P, R]":
         """Apply a side-effect function without changing the value.
 
