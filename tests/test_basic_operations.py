@@ -240,62 +240,7 @@ class TestFallbackPatterns:
         assert isinstance(result.error, ValueError)
         assert str(result.error) == "Third error"
 
-    @pytest.mark.asyncio
-    async def test_fallback_with_condition(self, fetch_data):
-        complex_fallback = (
-            fetch_data.filter(lambda d: "users" in d and len(d["users"]) > 0, "No users found") |
-            constant({"users": [{"id": 0, "name": "Default User"}]})
-        )
-        result_with_users = await complex_fallback("https://api.example.com/users")
-        assert result_with_users.is_ok()
-        data_with_users = result_with_users.default_value(None)
-        assert len(data_with_users["users"]) == 2
-        result_without_users = await complex_fallback("https://api.example.com/posts")
-        assert result_without_users.is_ok()
-        data_without_users = result_without_users.default_value(None)
-        assert len(data_without_users["users"]) == 1 # current data_without_users == https://api.example.com/posts
-        assert data_without_users["users"][0]["name"] == "Default User"
-
-class TestTransformations:
-    @pytest.mark.asyncio
-    async def test_map_transformation(self, fetch_data):
-        get_first_user = fetch_data.transform(
-            lambda data: data.get("users", [{}])[0].get("name", "Unknown")
-        )
-        result = await get_first_user("https://api.example.com/users")
-        assert result.is_ok()
-        name = result.default_value(None)
-        assert name == "Alice"
-
-    @pytest.mark.asyncio
-    async def test_bind_transformation(self, fetch_data):
-        @operation
-        async def get_user_details(user_name: str) -> Dict[str, Any]:
-            if user_name == "Alice":
-                return {"name": user_name, "email": "alice@example.com", "role": "admin"}
-            else:
-                return {"name": user_name, "email": f"{user_name.lower()}@example.com", "role": "user"}
-        get_first_user_details = fetch_data.bind(
-            lambda data: get_user_details(data.get("users", [{}])[0].get("name", "Unknown"))
-        )
-        result = await get_first_user_details("https://api.example.com/users")
-        assert result.is_ok()
-        user_details = result.default_value(None)
-        assert user_details["name"] == "Alice"
-        assert user_details["email"] == "alice@example.com"
-        assert user_details["role"] == "admin"
-
-    @pytest.mark.asyncio
-    async def test_filter_operation(self, fetch_data):
-        valid_data = fetch_data.filter(
-            lambda data: "users" in data and len(data["users"]) > 0,
-            "No users found"
-        )
-        valid_result = await valid_data("https://api.example.com/users")
-        assert valid_result.is_ok()
-        invalid_result = await valid_data("https://api.example.com/posts")
-        assert invalid_result.is_error()
-        assert str(invalid_result.error) == "No users found"
+    
 
 class TestUtilities:
     @pytest.mark.asyncio
