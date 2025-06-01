@@ -30,11 +30,10 @@ def filter(
         filter(is_adult_check)(users)  # Operation predicate
         filter({"status": "active", "verified": True})(users)  # Dict matching
     """
-    @operation
     async def _filter(items: List[T]) -> List[T]:
         if isinstance(predicate, dict):
             # Dict matching
-            results = []
+            filtered_items: List[T] = []
             for item in items:
                 match = True
                 for key, value in predicate.items():
@@ -47,21 +46,21 @@ def filter(
                         match = False
                         break
                 if match:
-                    results.append(item)
-            return results
+                    filtered_items.append(item)
+            return filtered_items
         elif isinstance(predicate, Operation):
             # Operation predicate
-            results = []
+            filtered_items = []
             for item in items:
                 res = await predicate.execute(item)
-                if res.is_ok() and res.default_value(False):  # ✅ Fixed: use default_value() instead of .value
-                    results.append(item)
-            return results
+                if res.is_ok() and res.default_value(False):
+                    filtered_items.append(item)
+            return filtered_items
         else:
             # Callable predicate
             return [item for item in items if predicate(item)]
-    
-    return _filter
+
+    return operation(_filter)
 
 
 def map(
@@ -83,36 +82,33 @@ def map(
         map(enrich_user)(users)  # Operation transform
         map(lambda items: len(items))({"cat1": [...], "cat2": [...]})  # Dict → Dict
     """
-    @operation
     async def _map(items: Union[List[T], Dict[str, T]]) -> Union[List[R], Dict[str, R]]:
         if isinstance(items, dict):
             # Handle dictionary - map over values, preserve keys
             if isinstance(fn, Operation):
-                results = {}
+                out_dict: Dict[str, R] = {}
                 for key, value in items.items():
                     res = await fn.execute(value)
                     if res.is_ok():
-                        results[key] = res.default_value(cast(R, None))
-                    elif res.is_error():
+                        out_dict[key] = res.default_value(cast(R, None))
+                    else:
                         raise res.error
-                return results
-            else:
-                return {key: fn(value) for key, value in items.items()}
-        else:
-            # Handle list - original behavior
-            if isinstance(fn, Operation):
-                results = []
-                for item in items:
-                    res = await fn.execute(item)
-                    if res.is_ok():
-                        results.append(res.default_value(cast(R, None)))
-                    elif res.is_error():
-                        raise res.error
-                return results
-            else:
-                return [fn(item) for item in items]
-    
-    return _map
+                return out_dict
+            return {key: fn(value) for key, value in items.items()}
+
+        # Handle list - original behavior
+        if isinstance(fn, Operation):
+            out_list: List[R] = []
+            for item in items:  # type: ignore[arg-type]
+                res = await fn.execute(item)
+                if res.is_ok():
+                    out_list.append(res.default_value(cast(R, None)))
+                else:
+                    raise res.error
+            return out_list
+        return [fn(item) for item in items]  # type: ignore[arg-type]
+
+    return operation(_map)
 
 
 def reduce(
@@ -134,36 +130,32 @@ def reduce(
         reduce(lambda a, b: a + b, numbers, 0)
         reduce(combine_op, items)  # Operation reducer
     """
-    if not isinstance(fn, Operation):
-        fn_op = operation(fn)
-    else:
-        fn_op = fn
-    
+    fn_op = fn if isinstance(fn, Operation) else operation(fn)
     has_initial = initial is not None
-    
-    @operation
-    async def _reduce(items: Optional[Iterable[Any]] = None) -> Any:
-        items_iter = iter(items)
-        
-        # Handle initial value
+
+    async def _reduce(items: Iterable[T]) -> A:
+        it = iter(items)
+        # Explicitly handle the "empty sequence, no initial" case
         if has_initial:
-            accumulator = initial
+            if initial is None:  # This should never happen due to has_initial check
+                raise ValueError("Initial value cannot be None when has_initial is True")
+            acc = initial
         else:
             try:
-                accumulator = next(items_iter)
+                first = next(it)
+                acc = cast(A, first)  # Cast first item to accumulator type
             except StopIteration:
                 raise ValueError("reduce() of empty sequence with no initial value")
-        
-        # Reduce over remaining items
-        for item in items_iter:
-            result = await fn_op.execute(accumulator, item)
-            if result.is_error():
-                raise result.error
-            accumulator = cast(Any, result.default_value(None))
-        
-        return accumulator
-    
-    return _reduce
+
+        for item in it:
+            res = await fn_op.execute(acc, item)
+            if res.is_error():
+                raise res.error
+            acc = res.default_value(cast(A, None))  # Cast result to accumulator type
+
+        return acc
+
+    return operation(_reduce)
 
 
 def zip(
@@ -210,24 +202,19 @@ def zip(
         )(["hello", "world"])
         # Result: [("HELLO", 5, 2), ("WORLD", 5, 1)]
     """
-    @operation
     async def _zip(items: List[T]) -> List[Tuple[Any, ...]]:
         if not operations:
             return [()] * len(items)
-            
-        result = []
-        
+
+        result: List[Tuple[Any, ...]] = []
         for item in items:
-            # Apply all operations to this item
-            item_results = []
-            
+            item_results: List[Any] = []
             for op in operations:
                 if isinstance(op, Operation):
                     res = await op.execute(item)
                     if res.is_ok():
-                        item_results.append(res.default_value(None))  # ✅ Fixed: use default_value() instead of .value
+                        item_results.append(res.default_value(None))
                     else:
-                        # Include None for failed operations
                         item_results.append(None)
                 elif callable(op):
                     try:
@@ -235,14 +222,11 @@ def zip(
                     except Exception:
                         item_results.append(None)
                 else:
-                    # Non-callable, non-operation - just include as-is
                     item_results.append(op)
-                    
             result.append(tuple(item_results))
-            
         return result
-    
-    return _zip
+
+    return operation(_zip)
 
 @operation
 def contains(collection: Union[List, Dict, str, set], item: Any) -> bool:

@@ -171,11 +171,11 @@ class Operation(Generic[P, R]):
     @classmethod
     def _from_function(
         cls,
-        fn: Callable[..., Any],
+        fn: Callable[P2, R2] | Callable[P2, Awaitable[R2]],
         *,
         require_ctx: bool = False,
         ctx_type: type[BaseContext] | None = None,
-    ) -> "Operation[..., Any]":
+    ) -> "Operation[P2, R2]":
         """Create an Operation from a function.
 
         Args:
@@ -195,12 +195,12 @@ class Operation(Generic[P, R]):
 
         g = OpGraph()
         g.add_node(spec)
-        return cls(
+        return cast(Operation[P2, R2], cls(
             graph=g,
             head_id=spec.id,
             tail_id=spec.id,
-            ctx_type=ctx_type,  # ← preserve the context metadata
-        )
+            ctx_type=ctx_type,
+        ))
 
     def __call__(
         self, *args: P.args, **kwargs: P.kwargs
@@ -841,27 +841,36 @@ def operation(
 
     return _decorate(_fn)
 
-@operation
-def constant(value: R, *args: Any, **kwargs: Any) -> R: 
-    """Create an Operation that always returns the specified value.
+_C = TypeVar("_C")          # for constant
+_I = TypeVar("_I")          # for identity
 
-    Args:
-        value: The constant value to return.
-
-    Returns:
-        An Operation that always returns the value.
+def constant(value: _C) -> Operation[..., _C]:
     """
+    Build an Operation that always returns *value* regardless of the input.
+    
+    Example:
+        ```python
+        >>> five = constant(5)        # five is now an Operation
+        >>> (await five.execute()).default_value(None) == 5
+        ... True
+        ```
+    """
+    # The inner function is what actually goes through @operation;
+    # it ignores whatever arguments the pipeline passes in.
+    @operation
+    def _inner(*_args: Any, **_kwargs: Any) -> _C:
+        return value
 
-    return value
+    return _inner
 
 @operation
-def identity(value: R, *args: Any, **kwargs: Any) -> R: 
-    """Create an Operation that returns its input unchanged.
-
-    Args:
-        value: The input value.
-
-    Returns:
-        The same value.
+def identity(x: Any) -> Any:
     """
-    return value
+    The identity Operation returns its input unchanged.
+
+    Example:
+    ```python
+    >>> (await identity.execute(42)).default_value(None) == 42
+    True
+    """
+    return x

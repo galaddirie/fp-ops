@@ -49,9 +49,8 @@ def get(path: str, default: Any = None) -> Operation[[Any], Any]:
         #   get("user.profile.email", "notfound@example.com")
         # )
     """
-    @operation
     def _get_inner(data: Any) -> Any:
-        if not path: # path and default are from the outer scope
+        if not path:  # path and default are from the outer scope
             return data
             
         parts = path.replace('[', '.').replace(']', '').split('.')
@@ -75,7 +74,8 @@ def get(path: str, default: Any = None) -> Operation[[Any], Any]:
                 return default
                 
         return current if current is not None else default
-    return _get_inner
+
+    return operation(_get_inner)
 
 
 def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
@@ -90,7 +90,6 @@ def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
             "isActive": True
         })(data)
     """
-    @operation
     async def _build(data: Any) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
 
@@ -113,7 +112,7 @@ def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
 
         return result
     
-    return _build
+    return operation(_build)
 
 
 def merge(*sources: Union[Dict[str, Any],
@@ -168,7 +167,6 @@ def merge(*sources: Union[Dict[str, Any],
         - Later sources override earlier ones for conflicting keys
         - All sources receive the same input data (not chained)
     """
-    @operation
     async def _merge(data: Any) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
 
@@ -193,7 +191,7 @@ def merge(*sources: Union[Dict[str, Any],
 
         return out
     
-    return _merge
+    return operation(_merge)
 
 
 def update(update_values: Dict[str, Any]) -> Operation[[Dict[str, Any]], Dict[str, Any]]:

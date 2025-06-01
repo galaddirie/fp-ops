@@ -167,7 +167,7 @@ def equals(expected: Any) -> Operation[[Any], bool]:
     """
     @operation
     def _equals(value: Any) -> bool:
-        return value == expected
+        return bool(value == expected)
     return _equals
 
 
@@ -181,7 +181,7 @@ def not_equals(expected: Any) -> Operation[[Any], bool]:
     """
     @operation
     def _not_equals(value: Any) -> bool:
-        return value != expected
+        return bool(value != expected)
     return _not_equals
 
 
