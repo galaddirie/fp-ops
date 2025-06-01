@@ -23,7 +23,7 @@ from typing import (
     Concatenate,
     overload,
     Protocol,
-    runtime_checkable
+    runtime_checkable,
 )
 from collections.abc import Generator
 
@@ -43,19 +43,19 @@ from fp_ops.primitives import (
 )
 
 # Core generics
-P = ParamSpec("P")  # parameters of *this* operation
-Q = ParamSpec("Q")  # parameters of *another* operation
-T = TypeVar("T")  # input type of *this* operation
-R = TypeVar("R")  # return value of *this* operation
-S = TypeVar("S")  # return value of *another* operation
+P = ParamSpec("P")  # parameters of *this* operation/function
+Q = ParamSpec("Q")  # parameters of *another* operation/function
+
+
+R = TypeVar("R")  # return value of *this* operation/function
+S = TypeVar("S")  # return value of *another* operation/function
+
 E = TypeVar("E", bound=Exception)  # error type
 
-# extra generics used only inside _from_function
-P2 = ParamSpec("P2")
-R2 = TypeVar("R2")
 
 
-def _ensure_async(fn: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
+
+def _ensure_async(fn: Callable[..., R]) -> Callable[..., Awaitable[R]]:
     """Wrap a sync function so that it is awaitable.
 
     Args:
@@ -72,19 +72,6 @@ def _ensure_async(fn: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
 
     return _wrapper
 
-
-def _wrap_result(value: Any) -> Result[Any, Exception]:
-    """Lift raw value into `Result` if it is not one already.
-
-    Args:
-        value: Any value or Result object.
-
-    Returns:
-        A Result object containing the value.
-    """
-    if isinstance(value, Result):
-        return value
-    return Ok(value)
 
 
 
@@ -146,7 +133,6 @@ class Operation(Generic[P, R]):
         self._bound_args = bound_args
         self._bound_kwargs = bound_kwargs
 
-    # BACK-COMPAT SHIMS
     @property
     def context_type(self) -> type[BaseContext] | None:
         """Backwards-compat attr expected by composition helpers & tests."""
@@ -171,11 +157,11 @@ class Operation(Generic[P, R]):
     @classmethod
     def _from_function(
         cls,
-        fn: Callable[P2, R2] | Callable[P2, Awaitable[R2]],
+        fn: Callable[Q, S] | Callable[Q, Awaitable[S]],
         *,
         require_ctx: bool = False,
         ctx_type: type[BaseContext] | None = None,
-    ) -> "Operation[P2, R2]":
+    ) -> "Operation[Q, S]":
         """Create an Operation from a function.
 
         Args:
@@ -195,7 +181,7 @@ class Operation(Generic[P, R]):
 
         g = OpGraph()
         g.add_node(spec)
-        return cast(Operation[P2, R2], cls(
+        return cast(Operation[Q, S], cls(
             graph=g,
             head_id=spec.id,
             tail_id=spec.id,
@@ -273,7 +259,8 @@ class Operation(Generic[P, R]):
         # Otherwise, execute with no arguments
         return self.execute(*args, **kwargs).__await__()
 
-    # NOTE: it doesnt matter what the other operation's input type is, we only care about the output type and the current operation's input type
+    # NOTE: it doesnt matter what the other operation's input type is,
+    #  we only care about the output type and the current operation's input type
     def __rshift__(self, other: "Operation[..., S]") -> "Operation[P, S]":
         """Compose this operation with another operation.
 
@@ -708,7 +695,7 @@ class Operation(Generic[P, R]):
                 raise result.error
             return cast(S, result.default_value(None))
 
-        op: Operation[Concatenate[R, Q], S] = Operation._from_function(
+        op: Operation[P, S] = Operation._from_function(
             _bind_wrapper,
             require_ctx=self._ctx_type is not None,
             ctx_type=self._ctx_type,
@@ -785,15 +772,21 @@ def operation(
     *,
     context: bool = False,
     context_type: type[BaseContext] | None = None,
-) -> Callable[[Callable[..., Any]], Operation[..., Any]]: ...
+) -> Callable[
+        [Callable[P, R] | Callable[P, Awaitable[R]]],
+        Operation[P, R] # BUG: currently P and R are interpreted as Never
+    ]: ...
 
 
 def operation(
-    _fn: Callable[..., Any] | None = None,
+    _fn: Callable[P, R] | Callable[P, Awaitable[R]] | None = None,
     *,
     context: bool = False,
     context_type: type[BaseContext] | None = None,
-) -> Operation[..., Any] | Callable[[Callable[..., Any]], Operation[..., Any]]:
+) -> (
+    Operation[P, R]
+    | Callable[[Callable[P, R] | Callable[P, Awaitable[R]]], Operation[P, R]]
+):
     """
     Decorator to create an Operation from a function, with optional context-awareness.
 
@@ -823,18 +816,15 @@ def operation(
     enforcing that a context is provided at execution time.
     """
 
-    def _decorate(fn: Callable[..., Any]) -> Operation[..., Any]:
-        if isinstance(fn, Operation):
-            return fn
-        impl = Operation._from_function(
-            fn,
-            require_ctx=context,
-            ctx_type=context_type,
-        )
-        # Preserve the docstring for better IDE experience
-        if fn.__doc__:
-            impl.__doc__ = fn.__doc__
-        return impl
+    def _decorate(fn: Callable[P, R] | Callable[P, Awaitable[R]]) -> Operation[P, R]:
+            impl = Operation._from_function(
+                fn,
+                require_ctx=context,
+                ctx_type=context_type,
+            )
+            if fn.__doc__:
+                impl.__doc__ = fn.__doc__
+            return impl
 
     if _fn is None:
         return _decorate
@@ -844,6 +834,7 @@ def operation(
 _C = TypeVar("_C")          # for constant
 _I = TypeVar("_I")          # for identity
 
+# todo: change to be alias for identity
 def constant(value: _C) -> Operation[..., _C]:
     """
     Build an Operation that always returns *value* regardless of the input.

@@ -1,4 +1,16 @@
-from typing import Union, Callable, List, Dict, Tuple, Sized, Any, Optional, TypeVar, cast, Iterable
+from typing import (
+    Union,
+    Callable,
+    List,
+    Dict,
+    Tuple,
+    Sized,
+    Any,
+    Optional,
+    TypeVar,
+    cast,
+    Iterable,
+)
 from fp_ops import Operation, operation
 from fp_ops.objects import get
 
@@ -11,25 +23,26 @@ V = TypeVar("V")
 
 
 def filter(
-    predicate: Union[Callable[[T], bool], Operation[[T], bool], Dict[str, Any]]
+    predicate: Union[Callable[[T], bool], Operation[[T], bool], Dict[str, Any]],
 ) -> Operation[[List[T]], List[T]]:
     """
     Filter items based on a predicate.
-    
+
     Args:
         predicate: Can be:
             - A callable: filter(lambda x: x > 5)
             - An Operation: filter(is_valid_check)
             - A dict for matching: filter({"status": "active"})
-    
+
     Returns:
         Operation that filters a list based on the predicate
-        
+
     Examples:
         filter(lambda x: x["age"] > 18)(users)
         filter(is_adult_check)(users)  # Operation predicate
         filter({"status": "active", "verified": True})(users)  # Dict matching
     """
+
     async def _filter(items: List[T]) -> List[T]:
         if isinstance(predicate, dict):
             # Dict matching
@@ -64,24 +77,25 @@ def filter(
 
 
 def map(
-    fn: Union[Callable[[T], R], Operation[[T], R]]
+    fn: Union[Callable[[T], R], Operation[[T], R]],
 ) -> Operation[[Union[List[T], Dict[str, T]]], Union[List[R], Dict[str, R]]]:
     """
     Transform each item in a list or each value in a dictionary.
-    
+
     Args:
         fn: Can be:
             - A callable: map(lambda x: x * 2)
             - An Operation: map(transform_op)
-    
+
     Returns:
         Operation that transforms each item in a list or each value in a dict
-        
+
     Examples:
         map(lambda x: x["name"].upper())(users)  # List → List
         map(enrich_user)(users)  # Operation transform
         map(lambda items: len(items))({"cat1": [...], "cat2": [...]})  # Dict → Dict
     """
+
     async def _map(items: Union[List[T], Dict[str, T]]) -> Union[List[R], Dict[str, R]]:
         if isinstance(items, dict):
             # Handle dictionary - map over values, preserve keys
@@ -117,14 +131,14 @@ def reduce(
 ) -> Operation[[Iterable[T]], A]:
     """
     Reduce a list to a single value.
-    
+
     Args:
         fn: A binary function (or `Operation`) that combines the
             running accumulator (`A`) with the next element (`T`)
             and returns the new accumulator.
         items: The sequence to fold over.
         initial: Optional starting value for the accumulator.
-    
+
     Examples:
         reduce(lambda a, b: a + b, numbers)
         reduce(lambda a, b: a + b, numbers, 0)
@@ -138,7 +152,9 @@ def reduce(
         # Explicitly handle the "empty sequence, no initial" case
         if has_initial:
             if initial is None:  # This should never happen due to has_initial check
-                raise ValueError("Initial value cannot be None when has_initial is True")
+                raise ValueError(
+                    "Initial value cannot be None when has_initial is True"
+                )
             acc = initial
         else:
             try:
@@ -158,25 +174,23 @@ def reduce(
     return operation(_reduce)
 
 
-def zip(
-    *operations: Operation[[T], R]
-) -> Operation[[List[T]], List[Tuple[Any, ...]]]:
+def zip(*operations: Operation[[T], R]) -> Operation[[List[T]], List[Tuple[Any, ...]]]:
     """
     Apply multiple operations to each item in a list and return tuples of results.
-    
+
     This is like a parallel map - for each item, all operations are applied
     and their results are collected into a tuple.
-    
+
     Note: This is different from compose.parallel() which runs operations concurrently
     on the same input. zip() applies operations to each item in a list sequentially.
-    
+
     Args:
         *operations: Operations to apply to each item
-    
+
     Returns:
         Operation that returns a list of tuples, where each tuple contains
         the results of applying all operations to that item
-    
+
     Examples:
         # Extract multiple fields from each user
         user_data = await zip(
@@ -185,7 +199,7 @@ def zip(
             get("email")
         )(users)
         # Result: [(1, "Alice", "alice@example.com"), (2, "Bob", "bob@example.com"), ...]
-        
+
         # Apply different transformations
         transformed = await zip(
             lambda x: x * 2,
@@ -193,15 +207,16 @@ def zip(
             lambda x: x + 10
         )([1, 2, 3, 4, 5])
         # Result: [(2, 1, 11), (4, 4, 12), (6, 9, 13), (8, 16, 14), (10, 25, 15)]
-        
+
         # Mix operations and functions
         results = await zip(
             to_upper_op,                    # Operation
-            lambda s: len(s),              # Function  
+            lambda s: len(s),              # Function
             count_vowels_op                # Another Operation
         )(["hello", "world"])
         # Result: [("HELLO", 5, 2), ("WORLD", 5, 1)]
     """
+
     async def _zip(items: List[T]) -> List[Tuple[Any, ...]]:
         if not operations:
             return [()] * len(items)
@@ -228,17 +243,18 @@ def zip(
 
     return operation(_zip)
 
+
 @operation
 def contains(collection: Union[List, Dict, str, set], item: Any) -> bool:
     """
     Check if collection contains item.
-    
+
     Example:
         contains(["hello", "world"], "hello")  # True
         contains(["hello", "world"], "foo")  # False
         contains("hello", "l")  # True
     """
-    if hasattr(collection, '__contains__'):
+    if hasattr(collection, "__contains__"):
         return item in collection
     return False
 
@@ -247,12 +263,12 @@ def contains(collection: Union[List, Dict, str, set], item: Any) -> bool:
 def not_contains(collection: Union[List, Dict, str, set], item: Any) -> bool:
     """
     Check if collection does not contain item.
-    
+
     Example:
         not_contains(["hello", "world"], "foo")  # True
         not_contains(["hello", "world"], "hello")  # False
     """
-    if hasattr(collection, '__contains__'):
+    if hasattr(collection, "__contains__"):
         return item not in collection
     return True
 
@@ -261,7 +277,7 @@ def not_contains(collection: Union[List, Dict, str, set], item: Any) -> bool:
 def flatten(data: List[List[T]]) -> List[T]:
     """
     Flatten a list of lists one level deep.
-    
+
     Example:
         flatten([[1, 2], [3, 4], [5]])  # [1, 2, 3, 4, 5]
     """
@@ -278,19 +294,19 @@ def flatten(data: List[List[T]]) -> List[T]:
 def flatten_deep(data: List[Any]) -> List[Any]:
     """
     Recursively flatten nested lists.
-    
+
     Example:
         flatten_deep([1, [2, [3, [4]], 5]])  # [1, 2, 3, 4, 5]
     """
     result = []
-    
+
     def _flatten_recursive(lst: List[Any]) -> None:
         for item in lst:
             if isinstance(item, list):
                 _flatten_recursive(item)
             else:
                 result.append(item)
-    
+
     _flatten_recursive(data)
     return result
 
@@ -300,7 +316,7 @@ def unique(data: List[T]) -> List[T]:
     """
     Get unique values from list while preserving order.
     For unhashable types, preserves all items (no deduplication).
-    
+
     Example:
         unique([1, 2, 2, 3, 1, 4])  # [1, 2, 3, 4]
         unique([{"a": 1}, {"b": 2}, {"a": 1}])  # [{"a": 1}, {"b": 2}, {"a": 1}] (preserves all)
@@ -323,7 +339,7 @@ def unique(data: List[T]) -> List[T]:
 def reverse(data: Union[List[T], str]) -> Union[List[T], str]:
     """
     Reverse a list or string.
-    
+
     Example:
         reverse([1, 2, 3])  # [3, 2, 1]
         reverse("hello")  # "olleh"
@@ -339,20 +355,20 @@ def reverse(data: Union[List[T], str]) -> Union[List[T], str]:
 def length(data: Sized) -> int:
     """
     Get length of list, dict, string, or any sized container.
-    
+
     Examples:
         length([1, 2, 3])  # 3
         length("hello")  # 5
         length({"a": 1, "b": 2})  # 2
     """
-    return len(data) if hasattr(data, '__len__') else 0
+    return len(data) if hasattr(data, "__len__") else 0
 
 
 @operation
 def keys(data: Dict[K, V]) -> List[K]:
     """
     Get dictionary keys as a list.
-    
+
     Example:
         keys({"a": 1, "b": 2, "c": 3})  # ["a", "b", "c"]
     """
@@ -363,7 +379,7 @@ def keys(data: Dict[K, V]) -> List[K]:
 def values(data: Dict[K, V]) -> List[V]:
     """
     Get dictionary values as a list.
-    
+
     Example:
         values({"a": 1, "b": 2, "c": 3})  # [1, 2, 3]
     """
@@ -374,7 +390,7 @@ def values(data: Dict[K, V]) -> List[V]:
 def items(data: Dict[K, V]) -> List[Tuple[K, V]]:
     """
     Get dictionary items as a list of tuples.
-    
+
     Example:
         items({"a": 1, "b": 2})  # [("a", 1), ("b", 2)]
     """
