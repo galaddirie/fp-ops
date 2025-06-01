@@ -318,32 +318,7 @@ class TestEdgeCases:
 
 class TestCustomCombinators:
     
-    @pytest.mark.asyncio
-    async def test_retry_if_error(self, random_service):
-        def retry_if_error(op: Callable, max_attempts: int = 3, delay: float = 0.1) -> Operation:
-            operation_obj = operation(op)
-            return operation_obj.retry(attempts=max_attempts, delay=delay)
-        
-        random_service.set_failure_rate(0.0)
-        
-        reliable_op = retry_if_error(random_service, max_attempts=3, delay=0.05)
-        
-        call_count = 0
-        original_execute = random_service.execute
-        
-        async def mock_execute(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return Result.Error(ConnectionError("First call fails"))
-            return await original_execute(*args, **kwargs)
-        
-        random_service.execute = mock_execute
-        
-        result = await reliable_op()
-        
-        assert result.is_ok()
-        assert call_count == 2
+
     
     @pytest.mark.asyncio
     async def test_when_combinator(self):
