@@ -19,6 +19,10 @@
 - **Operator Behavior**: Made `constant` and `identity` operations more ergonomic by simplifying their implementation
 - **Documentation**: Updated README with data operations examples and usage patterns
 
+### Fixed
+- improved type hints
+
+
 ## [0.2.5] - 2025-05-26
 
 ### Fixed
