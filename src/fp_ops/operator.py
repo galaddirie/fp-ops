@@ -273,8 +273,8 @@ class Operation(Generic[P, R]):
         # Otherwise, execute with no arguments
         return self.execute(*args, **kwargs).__await__()
 
-
-    def __rshift__(self, other: "Operation[Concatenate[R, Q], S]") -> "Operation[P, S]":
+    # NOTE: it doesnt matter what the other operation's input type is, we only care about the output type and the current operation's input type
+    def __rshift__(self, other: "Operation[..., S]") -> "Operation[P, S]":
         """Compose this operation with another operation.
 
         Args:
