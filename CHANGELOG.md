@@ -3,14 +3,13 @@
 ## [0.2.6] - 2025-05-27
 
 ### Added
-- **Data Operations Module**: Added comprehensive data manipulation operations in `fp_ops.data`:
-  - Path-based access: `get`, `pick`, `pluck`
-  - Object construction: `build`, `merge`, `update`
-  - Collection operations: `filter_by`, `group_by`, `sort_by`, `unique_by`
-  - Transformations: `map_values`, `map_keys`, `rename`, `omit`
-  - Aggregations: `count_by`, `sum_by`
-  - Common transformations: `to_lower`, `to_upper`, `strip`, `split`, `join`
-  - Utility operations: `keys`, `values`, `length`, `is_empty`, `is_not_empty`
+- **Data Operations Module**: Added comprehensive data manipulation operations:
+  - Path-based access: `get` for dot-notation access to nested data
+  - Object construction: `build` for schema-based object creation, `merge` for dictionary merging, `update` for dictionary updates
+  - Collection operations: `filter`, `map`, `reduce`, `zip`, `contains`, `not_contains`
+  - List operations: `flatten`, `flatten_deep`, `unique`, `reverse`
+  - Dictionary operations: `keys`, `values`, `items`
+  - Utility operations: `length`
 - **Flow Operations**: Added `when` operation for conditional transformations
 - **Operator Updates**: Simplified `constant` and `identity` operations for better ergonomics
 - **Test Coverage**: Added comprehensive test suite for data operations
