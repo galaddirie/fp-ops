@@ -3,7 +3,7 @@ from typing import Any, List
 if __name__ == "__main__":
     from fp_ops.operator import operation
     from fp_ops.placeholder import _
-    from fp_ops.collections import filter, map
+    from fp_ops.sequences import filter, map
     import asyncio
 
     # TODO non called operations cause type errors @operation VS @operation(context=True)

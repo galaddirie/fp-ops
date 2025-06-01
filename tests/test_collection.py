@@ -14,7 +14,7 @@ from typing import List, Dict, Any, Tuple
 from dataclasses import dataclass
 
 from fp_ops import operation, Operation
-from fp_ops.collections import (
+from fp_ops.sequences import (
     filter, map, reduce, zip,
     contains, not_contains,
     flatten, flatten_deep, unique, reverse,

@@ -9,7 +9,7 @@ from fp_ops.operator import (
     constant,
 )
 from fp_ops.flow import branch, attempt, fail
-from fp_ops.collections import map, filter
+from fp_ops.sequences import map, filter
 from fp_ops.decorators import operation
 from fp_ops.context import BaseContext
 from fp_ops.placeholder import _
