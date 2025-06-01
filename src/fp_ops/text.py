@@ -19,7 +19,12 @@ def split(delimiter: str = " ") -> Operation[[str], List[str]]:
     """
     @operation
     def _split(text: str) -> List[str]:
-        return text.split(delimiter) if isinstance(text, str) else []
+        if not isinstance(text, str):
+            return []
+        # Handle empty delimiter case
+        if delimiter == "":
+            raise ValueError("empty separator")
+        return text.split(delimiter)
     return _split
 
 
@@ -150,8 +155,7 @@ def title(text: str) -> str:
 # String Checks
 # ============================================================================
 
-@operation
-def starts_with(prefix: str, start: int = 0, end: Optional[int] = None) -> bool:
+def starts_with(prefix: str, start: int = 0, end: Optional[int] = None) -> Operation[[str], bool]:
     """
     Check if string starts with prefix.
     
@@ -159,6 +163,7 @@ def starts_with(prefix: str, start: int = 0, end: Optional[int] = None) -> bool:
         starts_with("Hello")("Hello World")  # True
         starts_with("World")("Hello World")  # False
     """
+    @operation
     def _starts_with(text: str) -> bool:
         if isinstance(text, str):
             return text.startswith(prefix, start, end)
@@ -166,8 +171,7 @@ def starts_with(prefix: str, start: int = 0, end: Optional[int] = None) -> bool:
     return _starts_with
 
 
-@operation
-def ends_with(suffix: str, start: int = 0, end: Optional[int] = None) -> bool:
+def ends_with(suffix: str, start: int = 0, end: Optional[int] = None) -> Operation[[str], bool]:
     """
     Check if string ends with suffix.
     
@@ -175,6 +179,7 @@ def ends_with(suffix: str, start: int = 0, end: Optional[int] = None) -> bool:
         ends_with("World")("Hello World")  # True
         ends_with("Hello")("Hello World")  # False
     """
+    @operation
     def _ends_with(text: str) -> bool:
         if isinstance(text, str):
             return text.endswith(suffix, start, end)

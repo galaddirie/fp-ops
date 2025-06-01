@@ -1,8 +1,9 @@
-from typing import Union, Callable, List, Dict, Tuple, Sized, Any, Optional, TypeVar, cast
+from typing import Union, Callable, List, Dict, Tuple, Sized, Any, Optional, TypeVar, cast, Iterable
 from fp_ops import Operation, operation
 from fp_ops.objects import get
 
 T = TypeVar("T")
+A = TypeVar("A")
 R = TypeVar("R")
 
 K = TypeVar("K")
@@ -53,7 +54,7 @@ def filter(
             results = []
             for item in items:
                 res = await predicate.execute(item)
-                if res.is_ok() and res.value:
+                if res.is_ok() and res.default_value(False):  # ✅ Fixed: use default_value() instead of .value
                     results.append(item)
             return results
         else:
@@ -65,9 +66,9 @@ def filter(
 
 def map(
     fn: Union[Callable[[T], R], Operation[[T], R]]
-) -> Operation[[List[T]], List[R]]:
+) -> Operation[[Union[List[T], Dict[str, T]]], Union[List[R], Dict[str, R]]]:
     """
-    Transform each item in a list.
+    Transform each item in a list or each value in a dictionary.
     
     Args:
         fn: Can be:
@@ -75,73 +76,92 @@ def map(
             - An Operation: map(transform_op)
     
     Returns:
-        Operation that transforms each item in a list
+        Operation that transforms each item in a list or each value in a dict
         
     Examples:
-        map(lambda x: x["name"].upper())(users)
+        map(lambda x: x["name"].upper())(users)  # List → List
         map(enrich_user)(users)  # Operation transform
+        map(lambda items: len(items))({"cat1": [...], "cat2": [...]})  # Dict → Dict
     """
     @operation
-    async def _map(items: List[T]) -> List[R]:
-        if isinstance(fn, Operation):
-            results = []
-            for item in items:
-                res = await fn.execute(item)
-                if res.is_ok():
-                    results.append(res.default_value(cast(R, None)))
-                if res.is_error():
-                    raise res.error
-            return results
+    async def _map(items: Union[List[T], Dict[str, T]]) -> Union[List[R], Dict[str, R]]:
+        if isinstance(items, dict):
+            # Handle dictionary - map over values, preserve keys
+            if isinstance(fn, Operation):
+                results = {}
+                for key, value in items.items():
+                    res = await fn.execute(value)
+                    if res.is_ok():
+                        results[key] = res.default_value(cast(R, None))
+                    elif res.is_error():
+                        raise res.error
+                return results
+            else:
+                return {key: fn(value) for key, value in items.items()}
         else:
-            return [fn(item) for item in items]
+            # Handle list - original behavior
+            if isinstance(fn, Operation):
+                results = []
+                for item in items:
+                    res = await fn.execute(item)
+                    if res.is_ok():
+                        results.append(res.default_value(cast(R, None)))
+                    elif res.is_error():
+                        raise res.error
+                return results
+            else:
+                return [fn(item) for item in items]
     
     return _map
 
 
 def reduce(
-    fn: Union[Callable[[T, T], T], Operation[[T, T], T]], 
-    initial: Optional[T] = None
-) -> Operation[[List[T]], T]:
+    fn: Union[Callable[[A, T], A], Operation[[A, T], A]],
+    initial: Optional[A] = None,
+) -> Operation[[Iterable[T]], A]:
     """
     Reduce a list to a single value.
     
     Args:
-        fn: Reducer function or operation
-        initial: Initial value (optional)
+        fn: A binary function (or `Operation`) that combines the
+            running accumulator (`A`) with the next element (`T`)
+            and returns the new accumulator.
+        items: The sequence to fold over.
+        initial: Optional starting value for the accumulator.
     
     Examples:
-        reduce(lambda a, b: a + b)(numbers)
-        reduce(lambda a, b: a + b, 0)(numbers)
-        reduce(combine_op)(items)  # Operation reducer
+        reduce(lambda a, b: a + b, numbers)
+        reduce(lambda a, b: a + b, numbers, 0)
+        reduce(combine_op, items)  # Operation reducer
     """
+    if not isinstance(fn, Operation):
+        fn_op = operation(fn)
+    else:
+        fn_op = fn
+    
+    has_initial = initial is not None
+    
     @operation
-    async def _reduce(items: List[T]) -> T:
-        if not items and initial is None:
-            raise ValueError("Cannot reduce empty list without initial value")
-            
-        if isinstance(fn, Operation):
-            # Operation reducer
-            if initial is not None:
-                accumulator = initial
-                start = 0
-            else:
-                accumulator = items[0]
-                start = 1
-                
-            for item in items[start:]:
-                res = await fn.execute(accumulator, item)
-                if res.is_ok():
-                    accumulator = res.default_value(cast(T, None))
-                else:
-                    raise res.error
-            return accumulator
+    async def _reduce(items: Optional[Iterable[Any]] = None) -> Any:
+        items_iter = iter(items)
+        
+        # Handle initial value
+        if has_initial:
+            accumulator = initial
         else:
-            # Callable reducer
-            from functools import reduce as functools_reduce
-            if initial is not None:
-                return functools_reduce(fn, items, initial)
-            else:
-                return functools_reduce(fn, items)
+            try:
+                accumulator = next(items_iter)
+            except StopIteration:
+                raise ValueError("reduce() of empty sequence with no initial value")
+        
+        # Reduce over remaining items
+        for item in items_iter:
+            result = await fn_op.execute(accumulator, item)
+            if result.is_error():
+                raise result.error
+            accumulator = cast(Any, result.default_value(None))
+        
+        return accumulator
     
     return _reduce
 
@@ -205,7 +225,7 @@ def zip(
                 if isinstance(op, Operation):
                     res = await op.execute(item)
                     if res.is_ok():
-                        item_results.append(res.value)
+                        item_results.append(res.default_value(None))  # ✅ Fixed: use default_value() instead of .value
                     else:
                         # Include None for failed operations
                         item_results.append(None)
@@ -295,9 +315,11 @@ def flatten_deep(data: List[Any]) -> List[Any]:
 def unique(data: List[T]) -> List[T]:
     """
     Get unique values from list while preserving order.
+    For unhashable types, preserves all items (no deduplication).
     
     Example:
         unique([1, 2, 2, 3, 1, 4])  # [1, 2, 3, 4]
+        unique([{"a": 1}, {"b": 2}, {"a": 1}])  # [{"a": 1}, {"b": 2}, {"a": 1}] (preserves all)
     """
     seen = set()
     result = []
@@ -308,9 +330,8 @@ def unique(data: List[T]) -> List[T]:
                 seen.add(item)
                 result.append(item)
         except TypeError:
-            # For unhashable types, use linear search
-            if item not in result:
-                result.append(item)
+            # For unhashable types, preserve all items (don't deduplicate)
+            result.append(item)
     return result
 
 
@@ -374,6 +395,3 @@ def items(data: Dict[K, V]) -> List[Tuple[K, V]]:
         items({"a": 1, "b": 2})  # [("a", 1), ("b", 2)]
     """
     return list(data.items()) if isinstance(data, dict) else []
-
-
-

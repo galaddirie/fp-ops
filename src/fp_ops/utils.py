@@ -70,38 +70,37 @@ def is_not_none(value: Any) -> bool:
     """
     return value is not None
 
+R = TypeVar('R')
+def default(fallback: R) -> Operation[[R | None], R]:
+    """
+    Wrap the pipeline’s running value and replace `None` with `fallback`.
+    Works even when the upstream stage produced no positional argument.
+    """
+    import copy
 
-def default(default_value: T) -> Operation[[Optional[T]], T]:
-    """
-    Provide a default value if input is None.
-    
-    Example:
-        default("N/A")(None)  # "N/A"
-        default(0)(None)  # 0
-        default("N/A")("hello")  # "hello"
-    """
     @operation
-    def _default(value: Optional[T]) -> T:
-        return default_value if value is None else value
+    def _default(value: R | None = None) -> R:
+        return value if value is not None else copy.deepcopy(fallback)
+
     return _default
+
 
 
 # ============================================================================
 # Type Checking
 # ============================================================================
 
-@operation
-def is_type(expected_type: type) -> Operation[[Any], bool]:
+def is_type(*types: type) -> Operation[[Any], bool]:
     """
-    Check if value is of expected type.
+    Check if value is of any of the expected types.
     
     Example:
-        is_type(str)("hello")  # True
-        is_type(int)(42)  # True
-        is_type(list)("hello")  # False
+        is_type(str, int)(42)  # True
+        is_type(str, int)(3.14)  # False
     """
+    @operation
     def _is_type(value: Any) -> bool:
-        return isinstance(value, expected_type)
+        return isinstance(value, types)
     return _is_type
 
 
@@ -364,21 +363,3 @@ def to_set(value: Any) -> set:
         return {value}
 
 
-# ============================================================================
-# Debugging Helpers
-# ============================================================================
-
-@operation
-def tap(side_effect: Callable[[Any], None]) -> Operation[[T], T]:
-    """
-    Execute a side effect function without changing the value.
-    Useful for debugging or logging.
-    
-    Example:
-        tap(print)(42)  # Prints 42, returns 42
-        tap(lambda x: logger.info(f"Value: {x}"))(data)
-    """
-    def _tap(value: T) -> T:
-        side_effect(value)
-        return value
-    return _tap
