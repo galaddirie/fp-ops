@@ -1,11 +1,13 @@
-from typing import Any
+from typing import Any, List
 
 if __name__ == "__main__":
     from fp_ops.operator import operation
     from fp_ops.placeholder import _
+    from fp_ops.collections import filter, map
     import asyncio
 
-    @operation
+    # TODO non called operations cause type errors @operation VS @operation(context=True)
+    @operation # type: ignore
     async def add(a: int, b: int) -> int:
         return a + b
     
@@ -24,6 +26,29 @@ if __name__ == "__main__":
     @operation
     def to_string(value: Any) -> str:
         return str(value)
+    
+
+    class User:
+        def __init__(self, name: str, age: int):
+            self.name = name
+            self.age = age
+
+    @operation
+    async def fetch_users() -> List[User]:
+        return [User("John", 25), User("Jane", 17), User("Jim", 30)]
+
+    # TODO: weird type bug, for some reason adding () causes a type error unlike the other operations
+    @operation()
+    async def is_adult(user: User) -> bool:
+        return user.age >= 18
+
+    # Full type inference chain
+    pipeline = (
+        fetch_users
+        >> filter(is_adult)  # Operation[..., List[User]]
+
+    )
+
 
     # Simple chaining
     pipeline = add >> add_one >> to_string
@@ -41,9 +66,8 @@ if __name__ == "__main__":
     pipeline9 = add(1,2) >> add_one(1)
 
     # placeholders down the chain, they should be the result of the previous operation add_one
-    pipeline10 = add(1,2) >> add_one >> identity(_)
+    pipeline10 = add(1,2) >> add_one >> identity(_) >> add(1,2) >> to_string  >> add >> to_string
     pipeline11 = add(1,2) >> add_one(1) >> identity(_)
-
     # Validation
     pipeline.validate()
     # validate all pipelines
@@ -51,7 +75,7 @@ if __name__ == "__main__":
         p.validate()
         print(f"Pipeline {i} built and validated: {p}")
 
-    async def main():
+    async def main() -> None:
         # execute pipelines
         result1 = await pipeline.execute(a=1, b=2)
         res = result1.default_value(None)
@@ -110,36 +134,29 @@ if __name__ == "__main__":
     asyncio.run(main())
 
 
-    async def test_execution():
-        @operation
-        async def add(a, b):
-            return a + b
-            
-        @operation
-        async def add_one(a):
-            return a + 1
+    async def test_execution() -> None:
+       
 
-        pipeline = add >> add_one
+
+        pipeline = (add >> add_one)
         pipeline.validate()
-        print(pipeline.dot_notation())
         # test the various ways to execute the pipeline
         result = await pipeline.execute(a=1, b=2)
         print(result)
         assert result.is_ok()
         assert result.default_value(None) == 4
 
-        result2 = await pipeline(1, 2).execute()
+        result2 = await pipeline.execute(1, 2)
         print(result2)
         assert result2.is_ok()
         assert result2.default_value(None) == 4
 
-
-        result3 = await pipeline(1, 2).execute()
+        result3 = await pipeline.execute(1, 2)
         print(result3)
         assert result3.is_ok()
         assert result3.default_value(None) == 4
 
-        result4 = await pipeline(1, b=2).execute()
+        result4 = await pipeline.execute(1, b=2)
         print(result4)
         assert result4.is_ok()
         assert result4.default_value(None) == 4
