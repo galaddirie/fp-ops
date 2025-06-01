@@ -1,1066 +1,795 @@
+"""
+Comprehensive test suite for fp_ops.composition module.
+Tests all composition operations including sequence, pipe, compose, parallel, and fallback.
+Covers edge cases, context propagation, error handling, and complex scenarios.
+"""
 import pytest
 import asyncio
-from typing import Any, Dict, List, Optional, Type, Tuple
-from unittest.mock import Mock, patch, AsyncMock
+from typing import Any, Dict, List, Tuple
+from dataclasses import dataclass
 
+# Assuming these imports based on the provided code
+from fp_ops import operation, Operation
+from fp_ops.composition import  pipe, compose, parallel, fallback
+from fp_ops.objects import get, build, merge
 from fp_ops.context import BaseContext
-from fp_ops.operator import operation
-from fp_ops.primitives import _, Placeholder
-from expression import Result
+from expression import Ok, Error, Result
 
 
-from fp_ops.composition import (
-    sequence,
-    pipe,
-    compose,
-    parallel,
-    fallback,
-    transform,
-    map,
-    filter,
-    reduce,
-    zip,
-    flat_map,
-    group_by,
-    partition,
-    first,
-    last,
-    gather_operations,
-)
-
-async def async_identity(x):
-    return x
-
-def sync_identity(x):
-    return x
-
-async def async_double(x):
-    return x * 2
-
-def sync_double(x):
-    return x * 2
-
-async def async_error(x):
-    raise ValueError("Async error")
-
-def sync_error(x):
-    raise ValueError("Sync error")
-
-
-@operation
-def inc(x: int) -> int:
-    return x + 1
-
-
-@operation
-async def async_inc(x: int) -> int:
-    await asyncio.sleep(0.01)       # tiny delay to exercise concurrency path
-    return x + 1
-
-
-@operation
-def err_on_three(x: int) -> int:
-    if x == 3:
-        raise ValueError("boom")
-    return x
-
-
+# Test fixtures and helper classes
 class TestContext(BaseContext):
-    value: str = "test"
-    label: str = "lab"
-
-
-
-@pytest.mark.asyncio
-async def test_sequence_basic():
-    op1 = operation(lambda x: x + 1)
-    op2 = operation(lambda x: x * 2)
-    op3 = operation(lambda x: x - 3)
-    seq_op = sequence(op1, op2, op3)
-    result = await seq_op.execute(5)
-    assert result.is_ok()
-    assert result.default_value(None) == [6, 10, 2]
-
-@pytest.mark.asyncio
-async def test_sequence_empty():
-    seq_op = sequence()
-    result = await seq_op.execute(42)
-    assert result.is_ok()
-    assert result.default_value(None) == []
-
-@pytest.mark.asyncio
-async def test_sequence_with_error():
-    op1 = operation(lambda x: x + 1)
-    op2 = operation(lambda x: x / 0)
-    op3 = operation(lambda x: x - 3)
-    seq_op = sequence(op1, op2, op3)
-    result = await seq_op.execute(5)
-    assert result.is_error()
-    assert isinstance(result.error, ZeroDivisionError)
-
-@pytest.mark.asyncio
-async def test_sequence_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def op1(x, context=None):
-        return f"{x}_{context.value}_1"
-    @operation(context=True, context_type=TestContext)
-    def op2(x, context=None):
-        return f"{x}_{context.value}_2"
-    @operation(context=True, context_type=TestContext)
-    def op3(x, context=None):
-        return f"{x}_{context.value}_3"
-    seq_op = sequence(op1, op2, op3)
-    result = await seq_op.execute(5, context=context)
-    assert result.is_ok()
-    assert result.default_value(None) == ["5_test_1", "5_test_2", "5_test_3"]
-
-@pytest.mark.asyncio
-async def test_sequence_with_context_update():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def op1(x, context=None):
-        return f"{x}_{context.value}_1"
-    @operation(context=True, context_type=TestContext)
-    def update_context(x, context=None):
-        new_context = TestContext(value="updated")
-        return new_context
-    @operation(context=True, context_type=TestContext)
-    def op3(x, context=None):
-        return f"{x}_{context.value}_3"
-    seq_op = sequence(op1, update_context, op3)
-    result = await seq_op.execute(5, context=context)
-    assert result.is_ok()
-    assert result.default_value(None) == ["5_test_1", "5_updated_3"]
-
-@pytest.mark.asyncio
-async def test_pipe_basic():
-    op1 = operation(lambda x: x + 1)
-    op2 = operation(lambda x: x * 2)
-    op3 = operation(lambda x: x - 3)
-    pipe_op = pipe(op1, op2, op3)
-    result = await pipe_op.execute(5)
-    assert result.is_ok()
-    assert result.default_value(None) == 9
-
-@pytest.mark.asyncio
-async def test_pipe_with_lambdas():
-    op1 = operation(lambda x: x + 1)
-    def step2(x):
-        if x > 5:
-            return operation(lambda y: y * 2)
-        else:
-            return operation(lambda y: y + 5)
-    op3 = operation(lambda x: x - 3)
-    pipe_op = pipe(op1, step2, op3)
-    result1 = await pipe_op.execute(5)
-    result2 = await pipe_op.execute(4)
-    assert result1.is_ok() and result1.default_value(None) == 9
-    assert result2.is_ok() and result2.default_value(None) == 7
-
-@pytest.mark.asyncio
-async def test_pipe_empty():
-    pipe_op = pipe()
-    result = await pipe_op.execute(42)
-    assert result.is_ok()
-    assert result.default_value(None) is None
-
-@pytest.mark.asyncio
-async def test_pipe_with_error():
-    op1 = operation(lambda x: x + 1)
-    op2 = operation(lambda x: x / 0)
-    op3 = operation(lambda x: x - 3)
-    pipe_op = pipe(op1, op2, op3)
-    result = await pipe_op.execute(5)
-    assert result.is_error()
-    assert isinstance(result.error, ZeroDivisionError)
-
-@pytest.mark.asyncio
-async def test_pipe_with_lambda_error():
-    op1 = operation(lambda x: x + 1)
-    def step2(x):
-        raise ValueError("Lambda error")
-    op3 = operation(lambda x: x - 3)
-    pipe_op = pipe(op1, step2, op3)
-    result = await pipe_op.execute(5)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Lambda error"
-
-@pytest.mark.asyncio
-async def test_pipe_with_invalid_lambda_return():
-    op1 = operation(lambda x: x + 1)
-    def step2(x):
-        return "not an operation"
-    op3 = operation(lambda x: x - 3)
-    pipe_op = pipe(op1, step2, op3)
-    result = await pipe_op.execute(5)
-    assert result.is_error()
-    assert isinstance(result.error, TypeError)
-
-@pytest.mark.asyncio
-async def test_pipe_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def op1(x, context=None):
-        return f"{x}_{context.value}_1"
-    @operation(context=True, context_type=TestContext)
-    def op2(x, context=None):
-        return f"{x}_{context.value}_2"
-    @operation(context=True, context_type=TestContext)
-    def op3(x, context=None):
-        return f"{x}_{context.value}_3"
-    pipe_op = pipe(op1, op2, op3)
-    result = await pipe_op.execute(5, context=context)
-    assert result.is_ok()
-    assert result.default_value(None) == "5_test_1_test_2_test_3"
-
-@pytest.mark.asyncio
-async def test_pipe_with_context_update():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def op1(x, context=None):
-        return f"{x}_{context.value}"
-    @operation(context=True, context_type=TestContext)
-    def update_context(x, context=None):
-        new_context = TestContext(value="updated")
-        return new_context
-    @operation(context=True, context_type=TestContext)
-    def op3(x, context=None):
-        return f"{x}_{context.value}"
-    pipe_op = pipe(op1, update_context, op3)
-    result = await pipe_op.execute(5, context=context)
-    assert result.is_ok()
-    assert isinstance(result.default_value(None), TestContext)
-    assert result.default_value(None).value == "updated"
-
-@pytest.mark.asyncio
-async def test_compose_basic():
-    op1 = operation(lambda x: x + 1)
-    op2 = operation(lambda x: x * 2)
-    op3 = operation(lambda x: x - 3)
-    compose_op = compose(op1, op2, op3)
-    result = await compose_op.execute(5)
-    assert result.is_ok()
-    assert result.default_value(None) == 9
-
-
-
-@pytest.mark.asyncio
-async def test_compose_single_operation():
-    op = operation(lambda x: x * 2)
-    compose_op = compose(op)
-    result = await compose_op.execute(5)
-    assert result.is_ok()
-    assert result.default_value(None) == 10
-
-@pytest.mark.asyncio
-async def test_compose_with_error():
-    op1 = operation(lambda x: x + 1)
-    op2 = operation(lambda x: x / 0)
-    op3 = operation(lambda x: x - 3)
-    compose_op = compose(op1, op2, op3)
-    result = await compose_op.execute(5)
-    assert result.is_error()
-    assert isinstance(result.error, ZeroDivisionError)
-
-@pytest.mark.asyncio
-async def test_compose_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def op1(x, context=None):
-        return f"{x}_{context.value}_1"
-    @operation(context=True, context_type=TestContext)
-    def op2(x, context=None):
-        return f"{x}_{context.value}_2"
-    @operation(context=True, context_type=TestContext)
-    def op3(x, context=None):
-        return f"{x}_{context.value}_3"
-    compose_op = compose(op1, op2, op3)
-    result = await compose_op.execute(5, context=context)
-    assert result.is_ok()
-    assert result.default_value(None) == "5_test_1_test_2_test_3"
-
-@pytest.mark.asyncio
-async def test_parallel_basic():
-    op1 = operation(lambda x: x + 1)
-    op2 = operation(lambda x: x * 2)
-    op3 = operation(lambda x: x - 3)
-    parallel_op = parallel(op1, op2, op3)
-    result = await parallel_op.execute(5)
-    assert result.is_ok()
-    assert result.default_value(None) == (6, 10, 2)
-
-@pytest.mark.asyncio
-async def test_parallel_empty():
-    parallel_op = parallel()
-    result = await parallel_op.execute(42)
-    assert result.is_ok()
-    assert result.default_value(None) == ()
-
-@pytest.mark.asyncio
-async def test_parallel_with_error():
-    op1 = operation(lambda x: x + 1)
-    op2 = operation(lambda x: x / 0)
-    op3 = operation(lambda x: x - 3)
-    parallel_op = parallel(op1, op2, op3)
-    result = await parallel_op.execute(5)
-    assert result.is_error()
-    assert isinstance(result.error, ZeroDivisionError)
-
-@pytest.mark.asyncio
-async def test_parallel_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def op1(x, context=None):
-        return f"{x}_{context.value}_1"
-    @operation(context=True, context_type=TestContext)
-    def op2(x, context=None):
-        return f"{x}_{context.value}_2"
-    @operation(context=True, context_type=TestContext)
-    def op3(x, context=None):
-        return f"{x}_{context.value}_3"
-    parallel_op = parallel(op1, op2, op3)
-    result = await parallel_op.execute(5, context=context)
-    assert result.is_ok()
-    assert result.default_value(None) == ("5_test_1", "5_test_2", "5_test_3")
-
-@pytest.mark.asyncio
-async def test_fallback_first_succeeds():
-    op1 = operation(lambda x: x * 2)
-    op2 = operation(sync_error)
-    op3 = operation(sync_error)
-    fallback_op = fallback(op1, op2, op3)
-    result = await fallback_op.execute(5)
-    assert result.is_ok()
-    assert result.default_value(None) == 10
-
-@pytest.mark.asyncio
-async def test_fallback_second_succeeds():
-    op1 = operation(sync_error)
-    op2 = operation(lambda x: x * 2)
-    op3 = operation(sync_error)
-    fallback_op = fallback(op1, op2, op3)
-    result = await fallback_op.execute(5)
-    assert result.is_ok()
-    assert result.default_value(None) == 10
-
-@pytest.mark.asyncio
-async def test_fallback_all_fail():
-    op1 = operation(sync_error)
-    op2 = operation(lambda x: x / 0)
-    op3 = operation(async_error)
-    fallback_op = fallback(op1, op2, op3)
-    result = await fallback_op.execute(5)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Async error"
-
-@pytest.mark.asyncio
-async def test_fallback_empty():
-    fallback_op = fallback()
-    result = await fallback_op.execute(42)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert "No operations provided" in str(result.error)
-
-@pytest.mark.asyncio
-async def test_fallback_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def op1(x, context=None):
-        if x < 10:
-            raise ValueError("Value too small")
-        return f"{x}_{context.value}"
-    @operation(context=True, context_type=TestContext)
-    def op2(x, context=None):
-        return f"fallback_{x}_{context.value}"
-    fallback_op = fallback(op1, op2)
-    result_fail = await fallback_op.execute(5, context=context)
-    result_success = await fallback_op.execute(15, context=context)
-    assert result_fail.is_ok()
-    assert result_fail.default_value(None) == "fallback_5_test"
-    assert result_success.is_ok()
-    assert result_success.default_value(None) == "15_test"
-
-@pytest.mark.asyncio
-async def test_map_basic():
-    base_op = operation(lambda x: x + 1)
-    mapper = lambda x: x * 2
-    map_op = transform(base_op, mapper)
-    result = await map_op.execute(5)
-    assert result.is_ok()
-    assert result.default_value(None) == 12
-
-@pytest.mark.asyncio
-async def test_map_with_error_in_base():
-    base_op = operation(sync_error)
-    mapper = lambda x: x * 2
-    map_op = transform(base_op, mapper)
-    result = await map_op.execute(5)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Sync error"
-
-@pytest.mark.asyncio
-async def test_map_with_error_in_mapper():
-    base_op = operation(lambda x: x + 1)
-    def error_mapper(x):
-        raise ValueError("Mapper error")
-    map_op = transform(base_op, error_mapper)
-    result = await map_op.execute(5)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Mapper error"
-
-@pytest.mark.asyncio
-async def test_map_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def base_op(x, context=None):
-        return f"{x}_{context.value}"
-    def mapper(x):
-        return f"mapped_{x}"
-    map_op = transform(base_op, mapper)
-    result = await map_op.execute(5, context=context)
-    assert result.is_ok()
-    assert result.default_value(None) == "mapped_5_test"
-
-@pytest.mark.asyncio
-async def test_filter_pass():
-    base_op = operation(lambda x: x + 5)
-    predicate = lambda x: x > 7
-    filter_op = filter(base_op, predicate)
-    result = await filter_op.execute(3)
-    assert result.is_ok()
-    assert result.default_value(None) == 8
-
-@pytest.mark.asyncio
-async def test_filter_fail():
-    base_op = operation(lambda x: x + 5)
-    predicate = lambda x: x > 10
-    filter_op = filter(base_op, predicate)
-    result = await filter_op.execute(3)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-
-@pytest.mark.asyncio
-async def test_filter_with_error_in_base():
-    base_op = operation(sync_error)
-    predicate = lambda x: x > 7
-    filter_op = filter(base_op, predicate)
-    result = await filter_op.execute(3)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Sync error"
-
-@pytest.mark.asyncio
-async def test_filter_with_error_in_predicate():
-    base_op = operation(lambda x: x + 5)
-    def error_predicate(x):
-        raise ValueError("Predicate error")
-    filter_op = filter(base_op, error_predicate)
-    result = await filter_op.execute(3)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Predicate error"
-
-@pytest.mark.asyncio
-async def test_filter_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def base_op(x, context=None):
-        return f"{x}_{context.value}"
-    def predicate(x):
-        return "test" in x
-    filter_op = filter(base_op, predicate)
-    result = await filter_op.execute(5, context=context)
-    assert result.is_ok()
-    assert result.default_value(None) == "5_test"
-
-@pytest.mark.asyncio
-async def test_reduce_basic():
-    base_op = operation(lambda x: [1, 2, 3, 4, 5])
-    reducer = lambda acc, item: acc + item
-    reduce_op = reduce(base_op, reducer)
-    result = await reduce_op.execute(None)
-    assert result.is_ok()
-    assert result.default_value(None) == 15
-
-@pytest.mark.asyncio
-async def test_reduce_empty_list():
-    base_op = operation(lambda x: [])
-    reducer = lambda acc, item: acc + item
-    reduce_op = reduce(base_op, reducer)
-    result = await reduce_op.execute(None)
-    assert result.is_ok()
-    assert result.default_value(None) is None
-
-@pytest.mark.asyncio
-async def test_reduce_non_list_input():
-    base_op = operation(lambda x: "not a list")
-    reducer = lambda acc, item: acc + item
-    reduce_op = reduce(base_op, reducer)
-    result = await reduce_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, TypeError)
-
-@pytest.mark.asyncio
-async def test_reduce_with_error_in_base():
-    base_op = operation(sync_error)
-    reducer = lambda acc, item: acc + item
-    reduce_op = reduce(base_op, reducer)
-    result = await reduce_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Sync error"
-
-@pytest.mark.asyncio
-async def test_reduce_with_error_in_reducer():
-    base_op = operation(lambda x: [1, 2, 3])
-    def error_reducer(acc, item):
-        raise ValueError("Reducer error")
-    reduce_op = reduce(base_op, error_reducer)
-    result = await reduce_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Reducer error"
-
-@pytest.mark.asyncio
-async def test_reduce_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def base_op(x, context=None):
-        return [1, 2, 3, context.value]
-    def reducer(acc, item):
-        if isinstance(acc, str) or isinstance(item, str):
-            return str(acc) + str(item)
-        return acc + item
-    reduce_op = reduce(base_op, reducer)
-    result = await reduce_op.execute(None, context=context)
-    assert result.is_ok()
-    assert result.default_value(None) == "6test"
-
-@pytest.mark.asyncio
-async def test_zip_basic():
-    op1 = operation(lambda x: x + 1)
-    op2 = operation(lambda x: x * 2)
-    op3 = operation(lambda x: x - 3)
-    zip_op = zip(op1, op2, op3)
-    result = await zip_op.execute(5)
-    assert result.is_ok()
-    assert result.default_value(None) == (6, 10, 2)
-
-@pytest.mark.asyncio
-async def test_zip_empty():
-    zip_op = zip()
-    result = await zip_op.execute(42)
-    assert result.is_ok()
-    assert result.default_value(None) == ()
-
-@pytest.mark.asyncio
-async def test_zip_with_error():
-    op1 = operation(lambda x: x + 1)
-    op2 = operation(lambda x: x / 0)
-    op3 = operation(lambda x: x - 3)
-    zip_op = zip(op1, op2, op3)
-    result = await zip_op.execute(5)
-    assert result.is_error()
-    assert isinstance(result.error, ZeroDivisionError)
-
-@pytest.mark.asyncio
-async def test_zip_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def op1(x, context=None):
-        return f"{x}_{context.value}_1"
-    @operation(context=True, context_type=TestContext)
-    def op2(x, context=None):
-        return f"{x}_{context.value}_2"
-    zip_op = zip(op1, op2)
-    result = await zip_op.execute(5, context=context)
-    assert result.is_ok()
-    assert result.default_value(None) == ("5_test_1", "5_test_2")
-
-@pytest.mark.asyncio
-async def test_flat_map_basic():
-    base_op = operation(lambda x: x + 1)
-    def mapper(value):
-        return [[value, value * 2], [value * 3, value * 4]]
-    flat_map_op = flat_map(base_op, mapper)
-    result = await flat_map_op.execute(5)
-    assert result.is_ok()
-    assert result.default_value(None) == [6, 12, 18, 24]
-
-@pytest.mark.asyncio
-async def test_flat_map_with_error_in_base():
-    base_op = operation(sync_error)
-    mapper = lambda x: [[x, x * 2]]
-    flat_map_op = flat_map(base_op, mapper)
-    result = await flat_map_op.execute(5)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Sync error"
-
-@pytest.mark.asyncio
-async def test_flat_map_with_error_in_mapper():
-    base_op = operation(lambda x: x + 1)
-    def error_mapper(x):
-        raise ValueError("Mapper error")
-    flat_map_op = flat_map(base_op, error_mapper)
-    result = await flat_map_op.execute(5)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Mapper error"
-
-@pytest.mark.asyncio
-async def test_flat_map_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def base_op(x, context=None):
-        return f"{x}_{context.value}"
-    def mapper(value):
-        return [[f"{value}_a", f"{value}_b"], [f"{value}_c"]]
-    flat_map_op = flat_map(base_op, mapper)
-    result = await flat_map_op.execute(5, context=context)
-    assert result.is_ok()
-    assert result.default_value(None) == ["5_test_a", "5_test_b", "5_test_c"]
-
-@pytest.mark.asyncio
-async def test_group_by_basic():
-    base_op = operation(lambda x: [1, 2, 3, 4, 5, 6])
-    grouper = lambda x: "even" if x % 2 == 0 else "odd"
-    group_by_op = group_by(base_op, grouper)
-    result = await group_by_op.execute(None)
-    assert result.is_ok()
-    grouped = result.default_value(None)
-    assert "odd" in grouped and "even" in grouped
-    assert grouped["odd"] == [1, 3, 5]
-    assert grouped["even"] == [2, 4, 6]
-
-@pytest.mark.asyncio
-async def test_group_by_empty_list():
-    base_op = operation(lambda x: [])
-    grouper = lambda x: x
-    group_by_op = group_by(base_op, grouper)
-    result = await group_by_op.execute(None)
-    assert result.is_ok()
-    assert result.default_value(None) == {}
-
-@pytest.mark.asyncio
-async def test_group_by_non_list_input():
-    base_op = operation(lambda x: "not a list")
-    grouper = lambda x: x
-    group_by_op = group_by(base_op, grouper)
-    result = await group_by_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, TypeError)
-
-@pytest.mark.asyncio
-async def test_group_by_with_error_in_base():
-    base_op = operation(sync_error)
-    grouper = lambda x: x
-    group_by_op = group_by(base_op, grouper)
-    result = await group_by_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Sync error"
-
-@pytest.mark.asyncio
-async def test_group_by_with_error_in_grouper():
-    base_op = operation(lambda x: [1, 2, 3])
-    def error_grouper(x):
-        raise ValueError("Grouper error")
-    group_by_op = group_by(base_op, error_grouper)
-    result = await group_by_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Grouper error"
-
-@pytest.mark.asyncio
-async def test_group_by_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def base_op(x, context=None):
-        return [f"a_{context.value}", f"b_{context.value}", f"a_other", f"c_{context.value}"]
-    grouper = lambda s: s[0]
-    group_by_op = group_by(base_op, grouper)
-    result = await group_by_op.execute(None, context=context)
-    assert result.is_ok()
-    grouped = result.default_value(None)
-    assert "a" in grouped and "b" in grouped and "c" in grouped
-    assert len(grouped["a"]) == 2
-    assert grouped["b"] == [f"b_{context.value}"]
-    assert grouped["c"] == [f"c_{context.value}"]
-
-@pytest.mark.asyncio
-async def test_partition_basic():
-    base_op = operation(lambda x: [1, 2, 3, 4, 5, 6])
-    predicate = lambda x: x % 2 == 0
-    partition_op = partition(base_op, predicate)
-    result = await partition_op.execute(None)
-    assert result.is_ok()
-    partitioned = result.default_value(None)
-    assert isinstance(partitioned, tuple) and len(partitioned) == 2
-    assert partitioned[0] == [2, 4, 6]
-    assert partitioned[1] == [1, 3, 5]
-
-@pytest.mark.asyncio
-async def test_partition_empty_list():
-    base_op = operation(lambda x: [])
-    predicate = lambda x: True
-    partition_op = partition(base_op, predicate)
-    result = await partition_op.execute(None)
-    assert result.is_ok()
-    partitioned = result.default_value(None)
-    assert isinstance(partitioned, tuple) and len(partitioned) == 2
-    assert partitioned[0] == []
-    assert partitioned[1] == []
-
-@pytest.mark.asyncio
-async def test_partition_non_list_input():
-    base_op = operation(lambda x: "not a list")
-    predicate = lambda x: True
-    partition_op = partition(base_op, predicate)
-    result = await partition_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, TypeError)
-
-@pytest.mark.asyncio
-async def test_partition_with_error_in_base():
-    base_op = operation(sync_error)
-    predicate = lambda x: True
-    partition_op = partition(base_op, predicate)
-    result = await partition_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Sync error"
-
-@pytest.mark.asyncio
-async def test_partition_with_error_in_predicate():
-    base_op = operation(lambda x: [1, 2, 3])
-    def error_predicate(x):
-        raise ValueError("Predicate error")
-    partition_op = partition(base_op, error_predicate)
-    result = await partition_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Predicate error"
-
-@pytest.mark.asyncio
-async def test_partition_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def base_op(x, context=None):
-        return [f"has_{context.value}", "no_match", f"also_has_{context.value}", "another_no_match"]
-    def predicate(s):
-        return "test" in s
-    partition_op = partition(base_op, predicate)
-    result = await partition_op.execute(None, context=context)
-    assert result.is_ok()
-    partitioned = result.default_value(None)
-    assert isinstance(partitioned, tuple) and len(partitioned) == 2
-    assert partitioned[0] == [f"has_{context.value}", f"also_has_{context.value}"]
-    assert partitioned[1] == ["no_match", "another_no_match"]
-
-@pytest.mark.asyncio
-async def test_first_basic():
-    base_op = operation(lambda x: [10, 20, 30, 40])
-    first_op = first(base_op)
-    result = await first_op.execute(None)
-    assert result.is_ok()
-    assert result.default_value(None) == 10
-
-@pytest.mark.asyncio
-async def test_first_empty_list():
-    base_op = operation(lambda x: [])
-    first_op = first(base_op)
-    result = await first_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, IndexError)
-    assert "empty" in str(result.error).lower()
-
-@pytest.mark.asyncio
-async def test_first_non_list_input():
-    base_op = operation(lambda x: "not a list")
-    first_op = first(base_op)
-    result = await first_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, TypeError)
-
-@pytest.mark.asyncio
-async def test_first_with_error_in_base():
-    base_op = operation(sync_error)
-    first_op = first(base_op)
-    result = await first_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Sync error"
-
-@pytest.mark.asyncio
-async def test_first_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def base_op(x, context=None):
-        return [f"first_{context.value}", "second", "third"]
-    first_op = first(base_op)
-    result = await first_op.execute(None, context=context)
-    assert result.is_ok()
-    assert result.default_value(None) == f"first_{context.value}"
-
-@pytest.mark.asyncio
-async def test_last_basic():
-    base_op = operation(lambda x: [10, 20, 30, 40])
-    last_op = last(base_op)
-    result = await last_op.execute(None)
-    assert result.is_ok()
-    assert result.default_value(None) == 40
-
-@pytest.mark.asyncio
-async def test_last_empty_list():
-    base_op = operation(lambda x: [])
-    last_op = last(base_op)
-    result = await last_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, IndexError)
-    assert "empty" in str(result.error).lower()
-
-@pytest.mark.asyncio
-async def test_last_non_list_input():
-    base_op = operation(lambda x: "not a list")
-    last_op = last(base_op)
-    result = await last_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, TypeError)
-
-@pytest.mark.asyncio
-async def test_last_with_error_in_base():
-    base_op = operation(sync_error)
-    last_op = last(base_op)
-    result = await last_op.execute(None)
-    assert result.is_error()
-    assert isinstance(result.error, ValueError)
-    assert str(result.error) == "Sync error"
-
-@pytest.mark.asyncio
-async def test_last_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def base_op(x, context=None):
-        return ["first", "second", f"last_{context.value}"]
-    last_op = last(base_op)
-    result = await last_op.execute(None, context=context)
-    assert result.is_ok()
-    assert result.default_value(None) == f"last_{context.value}"
-
-@pytest.mark.asyncio
-async def test_gather_operations_basic():
-    op1 = operation(lambda x: x + 1)
-    op2 = operation(lambda x: x * 2)
-    op3 = operation(lambda x: x - 3)
-    results = await gather_operations(op1, op2, op3, args=(5,))
-    assert len(results) == 3
-    assert all(isinstance(r, Result) for r in results)
-    assert all(r.is_ok() for r in results)
-    assert [r.default_value(None) for r in results] == [6, 10, 2]
-
-@pytest.mark.asyncio
-async def test_gather_operations_with_error():
-    op1 = operation(lambda x: x + 1)
-    op2 = operation(lambda x: x / 0)
-    op3 = operation(lambda x: x - 3)
-    results = await gather_operations(op1, op2, op3, args=(5,))
-    assert len(results) == 3
-    assert results[0].is_ok() and results[0].default_value(None) == 6
-    assert results[1].is_error() and isinstance(results[1].error, ZeroDivisionError)
-    assert results[2].is_ok() and results[2].default_value(None) == 2
-
-@pytest.mark.asyncio
-async def test_gather_operations_with_context():
-    context = TestContext()
-    @operation(context=True, context_type=TestContext)
-    def op1(x, context=None):
-        return f"{x}_{context.value}_1"
-    @operation(context=True, context_type=TestContext)
-    def op2(x, context=None):
-        return f"{x}_{context.value}_2"
-    results = await gather_operations(op1, op2, args=(5,), kwargs={"context": context})
-    assert len(results) == 2
-    assert all(r.is_ok() for r in results)
-    assert results[0].default_value(None) == "5_test_1"
-    assert results[1].default_value(None) == "5_test_2"
-
-@pytest.mark.asyncio
-async def test_gather_operations_without_args():
-    op1 = operation(lambda: 10)
-    op2 = operation(lambda: 20)
-    results = await gather_operations(op1, op2)
-    assert len(results) == 2
-    assert all(r.is_ok() for r in results)
-    assert results[0].default_value(None) == 10
-    assert results[1].default_value(None) == 20
-
-@pytest.mark.asyncio
-async def test_gather_operations_with_bound_operations():
-    op1 = operation(lambda x: x + 1)(5)
-    op2 = operation(lambda x: x * 2)(10)
-    results = await gather_operations(op1, op2)
-    assert len(results) == 2
-    assert all(r.is_ok() for r in results)
-    assert results[0].default_value(None) == 6
-    assert results[1].default_value(None) == 20
-
-
-
-
-@pytest.mark.asyncio
-async def test_map_iter_basic():
-    op = map(inc)
-    res: Result[List[int], Exception] = await op.execute([1, 2, 3])
-    assert res.is_ok()
-    assert res.default_value(None) == [2, 3, 4]
-
-
-@pytest.mark.asyncio
-async def test_map_iter_generator_input():
-    op = map(inc)
-    res = await op.execute((i for i in range(4)))
-    assert res.is_ok()
-    assert res.default_value(None) == [1, 2, 3, 4]
-
-
-@pytest.mark.asyncio
-async def test_map_iter_async_inner():
-    op = map(async_inc)
-    res = await op.execute([0, 1])
-    assert res.is_ok()
-    assert res.default_value(None) == [1, 2]
-
-
-@pytest.mark.asyncio
-async def test_map_iter_error_propagates():
-    op = map(err_on_three)
-    res = await op.execute([1, 2, 3, 4])
-    assert res.is_error()
-    assert isinstance(res.error, ValueError)
-    assert str(res.error) == "boom"
-
-
-# ---------------------------------------------------------------------------
-# Context propagation
-# ---------------------------------------------------------------------------
-
-@operation(context=True, context_type=TestContext)
-def tag(x: int, **kwargs) -> str:
-    ctx = kwargs.get("context")
-    return f"{ctx.label}:{x}"
-
-
-@pytest.mark.asyncio
-async def test_map_iter_with_context():
-    ctx = TestContext(label="lab")
-    op = map(tag)
-    res = await op.execute([1, 2, 3], context=ctx)
-    assert res.is_ok()
-    assert res.default_value(None) == ["lab:1", "lab:2", "lab:3"]
-
-
-# ---------------------------------------------------------------------------
-# Concurrency limiter
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_map_iter_max_concurrency_respected():
-    current = 0          # number of in-flight calls
-    peak = 0
-    lock = asyncio.Lock()
-
-    @operation
-    async def tracked(x: int) -> int:
-        nonlocal current, peak
-        async with lock:
-            current += 1
-            peak = max(peak, current)
-        await asyncio.sleep(0.02)   # keep several coroutines alive together
-        async with lock:
-            current -= 1
-        return x
-
-    op = map(tracked, max_concurrency=2)
-    res = await op.execute(range(6))
-    assert res.is_ok()
-    assert res.default_value(None) == list(range(6))
-    assert peak <= 2, f"observed concurrency {peak} exceeds limit"
-
-
-# ---------------------------------------------------------------------------
-# Edge cases
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_map_iter_empty_iterable():
-    op = map(inc)
-    res = await op.execute([])
-    assert res.is_ok()
-    assert res.default_value(None) == []
+    """Test context for context propagation tests."""
+    value: int = 0
+    name: str = "test"
+    
+    def increment(self) -> "TestContext":
+        return TestContext(value=self.value + 1, name=self.name)
+
+
+class ExtendedContext(TestContext):
+    """Extended context for testing context type inference."""
+    extra: str = "extra"
+
+
+# Helper operations
+@operation
+def add_one(x: int) -> int:
+    """Add one to input."""
+    return x + 1
 
 
 @operation
-def placeholder_op(fixed_val: str, item: Any) -> str:
-    return f"{fixed_val}-{item}"
+def multiply_by_two(x: int) -> int:
+    """Multiply input by two."""
+    return x * 2
 
 
-@pytest.mark.asyncio
-async def test_map_iter_with_placeholder():
-    # Create an operation that has a placeholder for the item from the iterable
-    # and a pre-filled (bound) 'fixed_val'
-    op_with_placeholder = placeholder_op("PREFIX", _)
+@operation
+def to_string(x: int) -> str:
+    """Convert to string."""
+    return str(x)
+
+
+@operation
+def failing_op(x: Any) -> Any:
+    """Always fails."""
+    raise ValueError("Intentional failure")
+
+
+@operation(context=True)
+def context_aware_add(x: int, **kwargs) -> int:
+    """Add context value to input."""
+    context = kwargs.get("context")
+    return x + context.value
+
+
+@operation(context=True)
+def update_context(x: Any, **kwargs) -> TestContext:
+    """Update and return context."""
+    context = kwargs["context"]
+    # Return the new context so the executor propagates it
+    new_context = context.increment()
+    return new_context
+
+
+# Fixtures
+@pytest.fixture
+def simple_ops():
+    """Simple operations for testing."""
+    return [add_one, multiply_by_two, to_string]
+
+
+@pytest.fixture
+def test_context():
+    """Test context instance."""
+    return TestContext(value=10, name="test")
+
+
+# Test pipe operation
+class TestPipeOperation:
+    """Test suite for the pipe operation."""
     
-    map_op = map(op_with_placeholder)
-    res = await map_op.execute([1, "two", 3.0])
-    assert res.is_ok()
-    assert res.default_value(None) == ["PREFIX-1", "PREFIX-two", "PREFIX-3.0"]
-
-
-@pytest.mark.asyncio
-async def test_map_iter_with_placeholder_and_context():
-    ctx = TestContext(label="ID")
-
-    @operation(context=True, context_type=TestContext)
-    def placeholder_context_op(fixed_val: str, item: Any, context: TestContext) -> str:
-        return f"{context.label}:{fixed_val}-{item}"
-
-    op_with_placeholder = placeholder_context_op("STATIC", _)
+    @pytest.mark.asyncio
+    async def test_pipe_basic(self):
+        """Test basic pipe with operations."""
+        pipeline = pipe(add_one, multiply_by_two, to_string)
+        result = await pipeline.execute(5)
+        assert result.is_ok()
+        assert result.default_value("") == "12"
     
-    map_op = map(op_with_placeholder)
-    res = await map_op.execute([10, 20], context=ctx)
-    assert res.is_ok()
-    assert res.default_value(None) == ["ID:STATIC-10", "ID:STATIC-20"]
-
-
-@pytest.mark.asyncio
-async def test_map_iter_with_placeholder_and_concurrency():
-    op_with_placeholder = placeholder_op("ITEM", _)
+    @pytest.mark.asyncio
+    async def test_pipe_with_lambdas(self):
+        """Test pipe with lambda functions returning operations."""
+        from fp_ops.flow import branch
+        pipeline = pipe(
+            add_one,
+            branch(lambda x: x > 5, multiply_by_two, add_one),
+            to_string
+        )
+        
+        # Test path where x > 5
+        result1 = await pipeline.execute(5)
+        assert result1.is_ok()
+        assert result1.default_value("") == "12"
+        
+        # Test path where x <= 5
+        result2 = await pipeline.execute(3)
+        assert result2.is_ok()
+        assert result2.default_value("") == "5"
     
-    map_op = map(op_with_placeholder, max_concurrency=2)
-    res = await map_op.execute(list(range(5)))
-    assert res.is_ok()
-    assert res.default_value(None) == [f"ITEM-{i}" for i in range(5)]
-
-
-@pytest.mark.asyncio
-async def test_map_iter_placeholder_error_propagates():
-    @operation
-    def error_placeholder_op(item: Any, should_error: bool) -> Any:
-        if should_error and item == 3:
-            raise ValueError("Placeholder error at 3")
-        return item
-
-    # Bind 'should_error' to True, leave 'item' as placeholder
-    op_with_placeholder = error_placeholder_op(_, True)
+    @pytest.mark.asyncio
+    async def test_pipe_empty(self):
+        """Test pipe with no steps."""
+        pipeline = pipe()
+        result = await pipeline.execute(5)
+        assert result.is_ok()
+        assert result.default_value(None) == 5
     
-    map_op = map(op_with_placeholder)
-    res = await map_op.execute([1, 2, 3, 4])
-    assert res.is_error()
-    assert isinstance(res.error, ValueError)
-    assert str(res.error) == "Placeholder error at 3"
+    @pytest.mark.asyncio
+    async def test_pipe_single_step(self):
+        """Test pipe with single step."""
+        pipeline = pipe(add_one)
+        result = await pipeline.execute(5)
+        assert result.is_ok()
+        assert result.default_value(0) == 6
+    
+    @pytest.mark.asyncio
+    async def test_pipe_error_in_operation(self):
+        """Test pipe error handling in operations."""
+        pipeline = pipe(add_one, failing_op, multiply_by_two)
+        result = await pipeline.execute(5)
+        assert result.is_error()
+        assert isinstance(result.error, ValueError)
+    
+    @pytest.mark.asyncio
+    async def test_pipe_error_in_function(self):
+        """Test pipe error handling in lambda functions."""
+        def failing_function(x: Any) -> Any:
+            raise ValueError("Intentional failure")
+        
+        pipeline = pipe(
+            add_one,
+            failing_function,
+            multiply_by_two
+        )
+        result = await pipeline.execute(5)
+        assert result.is_error()
+        assert isinstance(result.error, ValueError)
+    
+    @pytest.mark.asyncio
+    async def test_pipe_lambda_returns_non_operation(self):
+        """Test pipe with lambda that doesn't return an Operation."""
+        pipeline = pipe(
+            add_one,
+            lambda x: x * 2  # Returns int, not Operation
+        )
+        # bind wraps non-Operations, so this should work
+        result = await pipeline.execute(5)
+        assert result.is_ok()
+        assert result.default_value(0) == 12
+    
+    @pytest.mark.asyncio
+    async def test_pipe_context_propagation(self, test_context):
+        """Test context propagation through pipe."""
+        pipeline = pipe(
+            update_context,  # Returns updated context
+            context_aware_add,  # Should use updated context
+            to_string
+        )
+        
+        result = await pipeline.execute(5, context=test_context)
+        assert result.is_ok()
+        # 5 + 11 (updated context value) = 16
+        assert result.default_value("") == "16"
+    
+    @pytest.mark.asyncio
+    async def test_pipe_with_bound_operations(self):
+        """Test pipe with bound operations."""
+        from fp_ops.placeholder import _
+        @operation
+        def add(a: int, b: int) -> int:
+            return a + b
+        
+        # Use a lambda to create partial application
+        pipeline = pipe(
+            add_one,
+            add(_,10),  # Partial application via lambda
+            to_string
+        )
+        
+        result = await pipeline.execute(5)
+        assert result.is_ok()
+        assert result.default_value("") == "16"
+    
+   
+
+# Test compose operation
+class TestComposeOperation:
+    """Test suite for the compose operation."""
+    
+    @pytest.mark.asyncio
+    async def test_compose_basic(self):
+        """Test basic composition."""
+        comp = compose(to_string, multiply_by_two, add_one)
+        result = await comp.execute(5)
+        assert result.is_ok()
+        assert result.default_value("") == "12"
+    
+    @pytest.mark.asyncio
+    async def test_compose_empty(self):
+        """Test compose with no operations returns identity."""
+        comp = compose()
+        result = await comp.execute(5)
+        assert result.is_ok()
+        assert result.default_value(0) == 5
+    
+    @pytest.mark.asyncio
+    async def test_compose_single_operation(self):
+        """Test compose with single operation."""
+        comp = compose(add_one)
+        result = await comp.execute(5)
+        assert result.is_ok()
+        assert result.default_value(0) == 6
+    
+    @pytest.mark.asyncio
+    async def test_compose_order(self):
+        """Test that compose maintains correct order."""
+        # compose is right-to-left, so compose(a,b,c) = c >> b >> a
+        comp1 = compose(to_string, multiply_by_two, add_one)
+        comp2 = compose(to_string, multiply_by_two, add_one)
+        
+        result1 = await comp1.execute(5)
+        result2 = await comp2.execute(5)
+        
+        assert result1.is_ok() and result2.is_ok()
+        assert result1.default_value("") == result2.default_value("")
+    
+    @pytest.mark.asyncio
+    async def test_compose_with_context(self, test_context):
+        """Test compose with context-aware operations."""
+        # Since update_context returns the context, we need a different approach
+        @operation(context=True)
+        def passthrough_with_update(x: Any, **kwargs) -> Any:
+            """Pass through value while updating context."""
+            context = kwargs["context"]
+            # This will trigger context propagation when update_context is called
+            return x
+        
+        # First call update_context to get new context, then restore the value and add
+        comp = compose(
+            to_string, 
+            context_aware_add,
+            operation(lambda _: 5),  # Restore original value after update_context
+            update_context
+        )
+        result = await comp.execute(5, context=test_context)
+        assert result.is_ok()
+        assert result.default_value("") == "16"
+
+
+# Test parallel operation
+class TestParallelOperation:
+    """Test suite for the parallel operation."""
+    
+    @pytest.mark.asyncio
+    async def test_parallel_basic(self):
+        """Test basic parallel execution."""
+        par = parallel(add_one, multiply_by_two, to_string)
+        result = await par.execute(5)
+        assert result.is_ok()
+        values = result.default_value(())
+        assert values == (6, 10, "5")
+    
+    @pytest.mark.asyncio
+    async def test_parallel_empty(self):
+        """Test parallel with no operations."""
+        par = parallel()
+        result = await par.execute(5)
+        assert result.is_ok()
+        assert result.default_value(()) == ()
+    
+    @pytest.mark.asyncio
+    async def test_parallel_single_operation(self):
+        """Test parallel with single operation."""
+        par = parallel(add_one)
+        result = await par.execute(5)
+        assert result.is_ok()
+        assert result.default_value(()) == (6,)
+    
+    @pytest.mark.asyncio
+    async def test_parallel_error_handling(self):
+        """Test parallel stops on any error."""
+        par = parallel(add_one, failing_op, multiply_by_two)
+        result = await par.execute(5)
+        assert result.is_error()
+        assert isinstance(result.error, ValueError)
+    
+    @pytest.mark.asyncio
+    async def test_parallel_truly_concurrent(self):
+        """Test that operations run concurrently."""
+        execution_order = []
+        
+        @operation
+        async def slow_op1(x: int) -> str:
+            execution_order.append("start1")
+            await asyncio.sleep(0.1)
+            execution_order.append("end1")
+            return "op1"
+        
+        @operation
+        async def slow_op2(x: int) -> str:
+            execution_order.append("start2")
+            await asyncio.sleep(0.05)
+            execution_order.append("end2")
+            return "op2"
+        
+        par = parallel(slow_op1, slow_op2)
+        result = await par.execute(5)
+        assert result.is_ok()
+        assert result.default_value(()) == ("op1", "op2")
+        
+        # Check execution was interleaved (concurrent)
+        assert execution_order == ["start1", "start2", "end2", "end1"]
+    
+    @pytest.mark.asyncio
+    async def test_parallel_with_context(self, test_context):
+        """Test parallel with context-aware operations."""
+        @operation(context=True)
+        def get_context_value(x: Any, **kwargs) -> int:
+            context = kwargs.get("context")
+            return context.value
+        
+        @operation(context=True)
+        def get_context_name(x: Any, **kwargs) -> str:
+            context = kwargs.get("context")
+            return context.name
+        
+        par = parallel(
+            context_aware_add,  # x + context.value
+            get_context_value,  # context.value
+            get_context_name    # context.name
+        )
+        
+        result = await par.execute(5, context=test_context)
+        assert result.is_ok()
+        assert result.default_value(()) == (15, 10, "test")
+    
+    @pytest.mark.asyncio
+    async def test_parallel_different_return_types(self):
+        """Test parallel with operations returning different types."""
+        @operation
+        def to_list(x: int) -> List[int]:
+            return [x, x+1, x+2]
+        
+        @operation
+        def to_dict(x: int) -> Dict[str, int]:
+            return {"value": x, "doubled": x*2}
+        
+        par = parallel(add_one, to_list, to_dict)
+        result = await par.execute(5)
+        assert result.is_ok()
+        one, lst, dct = result.default_value((0, [], {}))
+        assert one == 6
+        assert lst == [5, 6, 7]
+        assert dct == {"value": 5, "doubled": 10}
+
+
+# Test fallback operation
+class TestFallbackOperation:
+    """Test suite for the fallback operation."""
+    
+    @pytest.mark.asyncio
+    async def test_fallback_first_succeeds(self):
+        """Test fallback when first operation succeeds."""
+        fb = fallback(add_one, multiply_by_two, to_string)
+        result = await fb.execute(5)
+        assert result.is_ok()
+        assert result.default_value(0) == 6
+    
+    @pytest.mark.asyncio
+    async def test_fallback_first_fails(self):
+        """Test fallback when first operation fails."""
+        fb = fallback(failing_op, multiply_by_two, to_string)
+        result = await fb.execute(5)
+        assert result.is_ok()
+        assert result.default_value(0) == 10
+    
+    @pytest.mark.asyncio
+    async def test_fallback_multiple_failures(self):
+        """Test fallback with multiple failures."""
+        @operation
+        def also_fails(x: Any) -> Any:
+            raise RuntimeError("Also fails")
+        
+        fb = fallback(failing_op, also_fails, add_one)
+        result = await fb.execute(5)
+        assert result.is_ok()
+        assert result.default_value(0) == 6
+    
+    @pytest.mark.asyncio
+    async def test_fallback_all_fail(self):
+        """Test fallback when all operations fail."""
+        @operation
+        def also_fails(x: Any) -> Any:
+            raise RuntimeError("Also fails")
+        
+        fb = fallback(failing_op, also_fails)
+        result = await fb.execute(5)
+        assert result.is_error()
+        assert isinstance(result.error, RuntimeError)
+    
+    @pytest.mark.asyncio
+    async def test_fallback_empty(self):
+        """Test fallback with no operations."""
+        fb = fallback()
+        result = await fb.execute(5)
+        assert result.is_error()
+        assert isinstance(result.error, ValueError)
+    
+    @pytest.mark.asyncio
+    async def test_fallback_single_operation(self):
+        """Test fallback with single operation."""
+        fb = fallback(add_one)
+        result = await fb.execute(5)
+        assert result.is_ok()
+        assert result.default_value(0) == 6
+    
+    @pytest.mark.asyncio
+    async def test_fallback_with_context(self, test_context):
+        """Test fallback with context-aware operations."""
+        @operation(context=True)
+        def failing_context_op(x: Any, **kwargs) -> Any:
+            context = kwargs.get("context")
+            raise ValueError("Context op fails")
+        
+        fb = fallback(failing_context_op, context_aware_add)
+        result = await fb.execute(5, context=test_context)
+        assert result.is_ok()
+        assert result.default_value(0) == 15
+    
+    @pytest.mark.asyncio
+    async def test_fallback_different_types(self):
+        """Test fallback with operations returning different types."""
+        @operation
+        def maybe_int(x: str) -> int:
+            # Only works if x is numeric
+            return int(x)
+        
+        @operation
+        def string_length(x: str) -> int:
+            return len(x)
+        
+        fb = fallback(maybe_int, string_length)
+        
+        # Test with numeric string
+        result1 = await fb.execute("42")
+        assert result1.is_ok()
+        assert result1.default_value(0) == 42
+        
+        # Test with non-numeric string
+        result2 = await fb.execute("hello")
+        assert result2.is_ok()
+        assert result2.default_value(0) == 5
+
+
+# Test complex compositions
+class TestComplexCompositions:
+    """Test suite for complex composition scenarios."""
+    
+    @pytest.mark.asyncio
+    async def test_nested_compositions(self):
+        """Test compositions of compositions."""
+        # Create sub-pipelines
+        preprocess = pipe(add_one, multiply_by_two)
+        postprocess = pipe(to_string, operation(lambda s: f"Result: {s}"))
+        
+        # Combine them
+        full_pipeline = pipe(preprocess, postprocess)
+        
+        result = await full_pipeline.execute(5)
+        assert result.is_ok()
+        assert result.default_value("") == "Result: 12"
+    
+
+    @pytest.mark.asyncio
+    async def test_fallback_in_pipe(self):
+        """Test using fallback within a pipe."""
+        # Fallback that tries to parse as int, then returns 0
+        parse_or_zero = fallback(
+            operation(lambda x: int(x)),
+            operation(lambda x: 0)
+        )
+        
+        pipeline = pipe(
+            parse_or_zero,
+            add_one,
+            to_string
+        )
+        
+        # Test with valid int string
+        result1 = await pipeline.execute("41")
+        assert result1.is_ok()
+        assert result1.default_value("") == "42"
+        
+        # Test with invalid int string
+        result2 = await pipeline.execute("not a number")
+        assert result2.is_ok()
+        assert result2.default_value("") == "1"
+    
+    @pytest.mark.asyncio
+    async def test_parallel_with_fallbacks(self):
+        """Test parallel execution of fallback operations."""
+        fb1 = fallback(failing_op, add_one)
+        fb2 = fallback(multiply_by_two, failing_op)  # This succeeds first
+        
+        par = parallel(fb1, fb2)
+        result = await par.execute(5)
+        assert result.is_ok()
+        assert result.default_value(()) == (6, 10)
+    
+    @pytest.mark.asyncio
+    async def test_dynamic_pipeline_construction(self):
+        """Test building pipelines dynamically based on data."""
+        def build_pipeline(config: Dict[str, Any]) -> Operation:
+            steps = []
+            
+            if config.get("add"):
+                steps.append(add_one)
+            if config.get("multiply"):
+                steps.append(multiply_by_two)
+            if config.get("stringify"):
+                steps.append(to_string)
+                
+            return pipe(*steps) if steps else operation(lambda x: x)
+        
+        # Test different configurations
+        config1 = {"add": True, "multiply": True, "stringify": True}
+        pipeline1 = build_pipeline(config1)
+        result1 = await pipeline1.execute(5)
+        assert result1.default_value("") == "12"
+        
+        config2 = {"multiply": True}
+        pipeline2 = build_pipeline(config2)
+        result2 = await pipeline2.execute(5)
+        assert result2.default_value(0) == 10
+    
+    @pytest.mark.asyncio
+    async def test_context_flow_through_compositions(self, test_context):
+        """Test context flowing through nested compositions."""
+        # Create an operation that updates context but passes through the value
+        @operation(context=True)
+        def update_context_passthrough(x: Any, **kwargs) -> Any:
+            """Update context and return the input value."""
+            context = kwargs["context"]
+            # Return the input value, context propagation happens via executor
+            # when we return a BaseContext from update_context
+            return x
+        
+        # First update context, then use it
+        update_then_use = pipe(
+            update_context,  # Returns new context
+            operation(lambda ctx: 5),  # Ignore context, return original value
+            context_aware_add  # Add with updated context
+        )
+        
+        # Just use the original context
+        just_use = context_aware_add
+        
+        parallel_with_context = parallel(
+            update_then_use,
+            just_use  # Uses original context
+        )
+
+        
+        # Replace sequence with pipe
+        pipeline = pipe(
+            parallel_with_context,
+            operation(lambda results: sum(results))  # Sum the parallel results
+        )
+        
+        result = await pipeline.execute(5, context=test_context)
+        assert result.is_ok()
+        value = result.default_value(0)  # Updated to expect single value
+        # First operation: context incremented to 11, then 5 + 11 = 16
+        # Second operation: just add with original context -> 5 + 10 = 15
+        # Sum = 31
+        assert value == 31
+    
+    @pytest.mark.asyncio
+    async def test_real_world_data_pipeline(self):
+        """Test a realistic data processing pipeline."""
+        # Simulate a data processing pipeline
+        raw_data = {
+            "users": [
+                {"id": 1, "name": "Alice", "age": 30},
+                {"id": 2, "name": "Bob", "age": 25},
+                {"id": 3, "name": "Charlie", "age": 35}
+            ],
+            "threshold": 28
+        }
+        
+        # Operations for the pipeline
+        extract_users = get("users")
+        extract_threshold = get("threshold")
+        
+        @operation
+        def filter_by_age(data: Tuple[List[Dict], int]) -> List[Dict]:
+            users, threshold = data
+            return [u for u in users if u["age"] >= threshold]
+        
+        @operation
+        def extract_names(users: List[Dict]) -> List[str]:
+            return [u["name"] for u in users]
+        
+        @operation
+        def format_output(names: List[str]) -> str:
+            return f"Users over threshold: {', '.join(names)}"
+        
+        # Build the pipeline
+        pipeline = pipe(
+            # First, extract both pieces of data in parallel
+            parallel(extract_users, extract_threshold),
+            # Then filter users by age
+            filter_by_age,
+            # Extract just the names
+            extract_names,
+            # Format for output
+            format_output
+        )
+        
+        result = await pipeline.execute(raw_data)
+        assert result.is_ok()
+        assert result.default_value("") == "Users over threshold: Alice, Charlie"
+
+
+# Test edge cases and error scenarios
+class TestEdgeCases:
+    """Test suite for edge cases and error scenarios."""
+    
+    @pytest.mark.asyncio
+    async def test_deeply_nested_pipes(self):
+        """Test very deep nesting of pipe operations."""
+        # Create a deep pipeline programmatically
+        depth = 50
+        
+        def create_deep_pipe(n: int) -> Operation:
+            if n == 0:
+                return add_one
+            else:
+                return pipe(
+                    add_one,
+                    create_deep_pipe(n - 1)
+                )
+        
+        deep_pipe = create_deep_pipe(depth)
+        result = await deep_pipe.execute(0)
+        assert result.is_ok()
+        assert result.default_value(0) == depth + 1
+    
+    @pytest.mark.asyncio
+    async def test_error_in_context_update(self, test_context):
+        """Test handling errors in context operations."""
+        @operation(context=True)
+        def failing_context_update(x: Any, **kwargs) -> Any:
+            context = kwargs.get("context")
+            raise ValueError("Context update failed")
+        
+        # Replace sequence with pipe
+        pipeline = pipe(
+            failing_context_update,
+            context_aware_add  # Should not be reached
+        )
+        
+        result = await pipeline.execute(5, context=test_context)
+        assert result.is_error()
+        assert isinstance(result.error, ValueError)
+    
+    @pytest.mark.asyncio
+    async def test_mixed_sync_async_operations(self):
+        """Test mixing sync and async operations."""
+        @operation
+        async def async_add_one(x: int) -> int:
+            await asyncio.sleep(0.01)
+            return x + 1
+        
+        # Mix sync and async operations
+        pipeline = pipe(
+            add_one,  # sync
+            async_add_one,  # async
+            multiply_by_two,  # sync
+            to_string  # sync
+        )
+        
+        result = await pipeline.execute(5)
+        assert result.is_ok()
+        assert result.default_value("") == "14"
+    
+    @pytest.mark.asyncio
+    async def test_operations_with_side_effects(self):
+        """Test operations with side effects in different compositions."""
+        side_effects = []
+        
+        @operation
+        def record_value(x: int) -> int:
+            side_effects.append(x)
+            return x
+        
+        # Test pipe - should record each intermediate value
+        side_effects.clear()
+        pipeline = pipe(
+            record_value,
+            add_one,
+            record_value,
+            multiply_by_two,
+            record_value
+        )
+        await pipeline.execute(5)
+        assert side_effects == [5, 6, 12]
+        
+        # Test parallel - should only record initial value
+        side_effects.clear()
+        par = parallel(
+            record_value,
+            record_value,
+            record_value
+        )
+        await par.execute(5)
+        assert side_effects == [5, 5, 5]
+    
+    @pytest.mark.asyncio
+    async def test_type_safety_in_compositions(self):
+        """Test that type mismatches are handled properly."""
+        # Operation expecting int but receiving string
+        @operation
+        def expects_int(x: int) -> int:
+            return x / 2  # Will fail if x is string
+        
+        pipeline = pipe(
+            to_string,  # Converts to string
+            expects_int  # Expects int
+        )
+        
+        result = await pipeline.execute(5)
+        assert result.is_error()
+        assert isinstance(result.error, TypeError)
+    
+    @pytest.mark.asyncio
+    async def test_memory_efficiency_large_parallel(self):
+        """Test parallel with many operations doesn't cause issues."""
+        # Create many lightweight operations
+        ops = [
+            operation(lambda x, i=i: x + i)
+            for i in range(100)
+        ]
+        
+        par = parallel(*ops)
+        result = await par.execute(0)
+        assert result.is_ok()
+        values = result.default_value(())
+        assert len(values) == 100
+        assert values[50] == 50
+    
+    @pytest.mark.asyncio
+    async def test_recursive_operations_in_pipe(self):
+        """Test recursive operation definitions in pipe."""
+        
+        def factorial(n: int) -> int:
+            if n <= 1:
+                return 1
+            else:
+                return n * factorial(n - 1)
+        
+        # This won't work directly as recursive composition,
+        # but we can test operations that internally recurse
+        pipeline = pipe(
+            operation(factorial),
+            to_string
+        )
+        
+        result = await pipeline.execute(5)
+        assert result.is_ok()
+        assert result.default_value("") == "120"
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

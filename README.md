@@ -1,6 +1,6 @@
 # FP-Ops: Functional Programming Operations for Python
 
-[![PyPI version](https://img.shields.io/badge/pypi-v0.2.5-blue.svg)](https://pypi.org/project/fp-ops/)
+[![PyPI version](https://img.shields.io/badge/pypi-v0.2.6-blue.svg)](https://pypi.org/project/fp-ops/)
 [![Python versions](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/fp-ops/)
 [![codecov](https://codecov.io/gh/galaddirie/fp-ops/graph/badge.svg?token=8MHGFYBD8V)](https://codecov.io/gh/galaddirie/fp-ops)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -178,6 +178,88 @@ counter = loop_until(
     lambda x: x + 1,
     max_iterations=20
 )
+```
+
+### Data Operations
+
+FP-Ops provides a rich set of data manipulation operations that make it easy to work with nested data structures, collections, and transformations:
+
+```python
+from fp_ops.data import (
+    get, pick, pluck, build, merge, update,
+    filter_by, group_by, sort_by, unique_by,
+    map_values, map_keys, rename, omit,
+    count_by, sum_by,
+    to_lower, to_upper, strip, split, join
+)
+
+# Path-based access
+user_data = {
+    "user": {
+        "profile": {"name": "John", "email": "john@example.com"},
+        "orders": [{"id": 1, "amount": 100}, {"id": 2, "amount": 200}]
+    }
+}
+
+# Get nested values
+name = await get("user.profile.name").execute(user_data)
+email = await get("user.profile.email", "no-email@example.com").execute(user_data)
+
+# Pick specific fields
+user_info = await pick("user.profile.name", "user.profile.email").execute(user_data)
+
+# Extract values from a list
+order_amounts = await pluck("amount").execute(user_data["user"]["orders"])
+
+# Build new objects
+user_summary = await build({
+    "name": get("user.profile.name"),
+    "email": get("user.profile.email"),
+    "order_count": lambda d: len(d["user"]["orders"]),
+    "total_spent": sum_by("amount") >> get("user.orders")
+}).execute(user_data)
+
+# Collection operations
+users = [
+    {"name": "Alice", "role": "admin", "score": 90},
+    {"name": "Bob", "role": "user", "score": 85},
+    {"name": "Charlie", "role": "user", "score": 75}
+]
+
+# Filter and group
+active_users = await filter_by({"role": "user"}).execute(users)
+by_role = await group_by("role").execute(users)
+
+# Sort and get unique values
+sorted_users = await sort_by("score", reverse=True).execute(users)
+unique_names = await unique_by("name").execute(users)
+
+# Transform dictionaries
+data = {"user_name": "John Doe", "user_email": "john@example.com"}
+cleaned = await (
+    map_keys(lambda k: k.replace("user_", "")) >>
+    map_values(strip) >>
+    rename({"name": "full_name"})
+).execute(data)
+
+# Aggregate data
+status_counts = await count_by("status").execute(orders)
+total_amount = await sum_by("amount").execute(orders)
+```
+
+These operations can be composed together to create powerful data transformation pipelines:
+
+```python
+# Complex pipeline example
+pipeline = (
+    get("user.orders") >>
+    filter_by({"status": "completed"}) >>
+    sort_by("amount", reverse=True) >>
+    pluck("amount") >>
+    sum_by(lambda x: x)
+)
+
+total_completed = await pipeline.execute(user_data)
 ```
 
 ## API Reference

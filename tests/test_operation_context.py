@@ -9,7 +9,7 @@ from fp_ops.operator import (
     constant,
 )
 from fp_ops.flow import branch, attempt, fail
-from fp_ops.composition import gather_operations
+from fp_ops.sequences import map, filter
 from fp_ops.decorators import operation
 from fp_ops.context import BaseContext
 from fp_ops.placeholder import _
@@ -380,18 +380,7 @@ class TestContextWithOperators:
         assert result.is_ok()
         assert result.default_value(None) == "Backup with context: test"
     
-    @pytest.mark.asyncio
-    async def test_context_with_map(self, test_context):
-        @operation(context=True, context_type=TestContext)
-        async def get_value(**kwargs):
-            context = kwargs["context"]
-            return context.value
-        
-        mapped_op = get_value.transform(lambda v: f"Mapped: {v}")
-        result = await mapped_op(context=test_context)
-        assert result.is_ok()
-        assert result.default_value(None) == "Mapped: test"
-    
+
     @pytest.mark.asyncio
     async def test_context_with_bind(self, test_context):
         @operation(context=True, context_type=TestContext)
@@ -408,22 +397,7 @@ class TestContextWithOperators:
         result = await bound_op(context=test_context)
         assert result.is_ok()
         assert result.default_value(None) == 4
-    
-    @pytest.mark.asyncio
-    async def test_context_with_filter(self, test_context):
-        @operation(context=True, context_type=TestContext)
-        async def get_counter(**kwargs):
-            context = kwargs["context"]
-            return context.counter
-        
-        filtered_pass = get_counter.filter(lambda c: c > 0, "Counter must be positive")
-        filtered_fail = get_counter.filter(lambda c: c > 10, "Counter must be > 10")
-        result_pass = await filtered_pass(context=test_context)
-        assert result_pass.is_ok()
-        assert result_pass.default_value(None) == 1
-        result_fail = await filtered_fail(context=test_context)
-        assert result_fail.is_error()
-        assert "Counter must be > 10" in str(result_fail.error)
+
 
 class TestContextErrorHandling:
     
@@ -584,33 +558,7 @@ class TestComplexContextScenarios:
         assert summary["data_count"] == 3
         assert summary["version"] == "2.0"
     
-    @pytest.mark.asyncio
-    async def test_gather_with_context(self, app_context):
-        @operation(context=True, context_type=AppContext)
-        async def get_url(**kwargs):
-            context = kwargs["context"]
-            return context.browser.url if context.browser else None
-        
-        @operation(context=True, context_type=AppContext)
-        async def get_data(**kwargs):
-            context = kwargs["context"]
-            return context.data.data if context.data else []
-        
-        @operation(context=True, context_type=AppContext)
-        async def get_version(**kwargs):
-            context = kwargs["context"]
-            return context.app_version
-        
-        results = await gather_operations(
-            get_url, get_data, get_version,
-            kwargs={"context": app_context}
-        )
-        assert len(results) == 3
-        assert all(r.is_ok() for r in results)
-        assert results[0].default_value(None) == "https://example.com"
-        assert len(results[1].default_value(None)) == 1
-        assert results[2].default_value(None) == "1.0"
-    
+   
     @pytest.mark.asyncio
     async def test_context_with_placeholders(self, test_context):
         @operation(context=True, context_type=TestContext)

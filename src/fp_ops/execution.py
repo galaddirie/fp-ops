@@ -321,11 +321,17 @@ class Executor:
             value = result.default_value(None)
             
             # ---------- propagate updated context -----------------------------
+            input_val = first_args[0] if idx == 0 and first_args else last_result
+
             if spec.require_ctx and isinstance(value, BaseContext):
+                # we got a *new* context → use it, but keep the data stream intact
                 ctx = value
+                next_running_val = input_val
+            else:
+                next_running_val = value
             # ------------------------------------------------------------------
             
             id2value[spec.id] = value
-            last_result = value
+            last_result = next_running_val
 
         return result

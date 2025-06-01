@@ -22,6 +22,8 @@ from typing import (
     Union,
     Concatenate,
     overload,
+    Protocol,
+    runtime_checkable,
 )
 from collections.abc import Generator
 
@@ -41,18 +43,19 @@ from fp_ops.primitives import (
 )
 
 # Core generics
-P = ParamSpec("P")  # parameters of *this* operation
-Q = ParamSpec("Q")  # parameters of *another* operation
-R = TypeVar("R")  # return value of *this* operation
-S = TypeVar("S")  # return value of *another* operation
+P = ParamSpec("P")  # parameters of *this* operation/function
+Q = ParamSpec("Q")  # parameters of *another* operation/function
+
+
+R = TypeVar("R")  # return value of *this* operation/function
+S = TypeVar("S")  # return value of *another* operation/function
+
 E = TypeVar("E", bound=Exception)  # error type
 
-# extra generics used only inside _from_function
-P2 = ParamSpec("P2")
-R2 = TypeVar("R2")
 
 
-def _ensure_async(fn: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
+
+def _ensure_async(fn: Callable[..., R]) -> Callable[..., Awaitable[R]]:
     """Wrap a sync function so that it is awaitable.
 
     Args:
@@ -70,18 +73,6 @@ def _ensure_async(fn: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
     return _wrapper
 
 
-def _wrap_result(value: Any) -> Result[Any, Exception]:
-    """Lift raw value into `Result` if it is not one already.
-
-    Args:
-        value: Any value or Result object.
-
-    Returns:
-        A Result object containing the value.
-    """
-    if isinstance(value, Result):
-        return value
-    return Ok(value)
 
 
 class Operation(Generic[P, R]):
@@ -95,7 +86,7 @@ class Operation(Generic[P, R]):
     # Calling an *un-bound* Operation *executes* it immediately:
     >>> await add.execute(a=1, b=2)
 
-    # Calling a *pipeline* returns a `_BoundCall` proxy that stores runtime
+    # Calling a *pipeline* returns a bound Operation that stores runtime
     # arguments until you finally ask for `.execute()`:
     >>> await (add >> add_one)(1, 2).execute()
 
@@ -119,6 +110,8 @@ class Operation(Generic[P, R]):
         tail_id: str,
         ctx_factory: Callable[[], BaseContext | Awaitable[BaseContext]] | None = None,
         ctx_type: type[BaseContext] | None = None,
+        bound_args: Tuple[Any, ...] | None = None,
+        bound_kwargs: Dict[str, Any] | None = None,
     ):
         """Initialize an Operation.
 
@@ -126,6 +119,10 @@ class Operation(Generic[P, R]):
             graph: The operation graph.
             head_id: ID of the first operation in the pipeline.
             tail_id: ID of the last operation in the pipeline.
+            ctx_factory: Optional context factory.
+            ctx_type: Optional context type.
+            bound_args: Bound positional arguments (for deferred execution).
+            bound_kwargs: Bound keyword arguments (for deferred execution).
         """
         self._graph = graph
         self._head_id = head_id
@@ -133,8 +130,9 @@ class Operation(Generic[P, R]):
         self._plan: ExecutionPlan | None = None
         self._ctx_factory = ctx_factory
         self._ctx_type = ctx_type
+        self._bound_args = bound_args
+        self._bound_kwargs = bound_kwargs
 
-    # BACK-COMPAT SHIMS
     @property
     def context_type(self) -> type[BaseContext] | None:
         """Backwards-compat attr expected by composition helpers & tests."""
@@ -147,6 +145,10 @@ class Operation(Generic[P, R]):
         We treat an op as bound when its head-template contains *no* placeholders
         but does contain constants (positional or keyword).
         """
+        # Check if we have deferred bound arguments
+        if self._bound_args is not None or self._bound_kwargs is not None:
+            return True
+            
         head = self._graph._nodes[self._head_id]
         tpl = head.template
         # TODO: should placeholders be considered bound?
@@ -155,11 +157,11 @@ class Operation(Generic[P, R]):
     @classmethod
     def _from_function(
         cls,
-        fn: Callable[P2, Awaitable[R2]] | Callable[P2, R2],
+        fn: Callable[Q, S] | Callable[Q, Awaitable[S]],
         *,
         require_ctx: bool = False,
         ctx_type: type[BaseContext] | None = None,
-    ) -> "Operation[P2, R2]":
+    ) -> "Operation[Q, S]":
         """Create an Operation from a function.
 
         Args:
@@ -179,19 +181,16 @@ class Operation(Generic[P, R]):
 
         g = OpGraph()
         g.add_node(spec)
-        return cast(
-            "Operation[P2, R2]",
-            cls(
-                graph=g,
-                head_id=spec.id,
-                tail_id=spec.id,
-                ctx_type=ctx_type,  # ← preserve the context metadata
-            ),
-        )
+        return cast(Operation[Q, S], cls(
+            graph=g,
+            head_id=spec.id,
+            tail_id=spec.id,
+            ctx_type=ctx_type,
+        ))
 
     def __call__(
         self, *args: P.args, **kwargs: P.kwargs
-    ) -> "_BoundCall[P, R]" | "Operation[P, R]":
+    ) -> "Operation[P, R]":
         """Call the operation with the given arguments.
 
         Args:
@@ -199,7 +198,7 @@ class Operation(Generic[P, R]):
             **kwargs: Keyword arguments.
 
         Returns:
-            Either a new Operation (if single step) or a _BoundCall.
+            Either a new Operation (if single step) or a bound Operation.
         """
         if self._is_single_step():
             first_step_id = self._head_id
@@ -231,19 +230,38 @@ class Operation(Generic[P, R]):
                 ctx_type=self._ctx_type,
             )
 
-        return _BoundCall(pipeline=self, args=args, kwargs=kwargs)
+        # For pipelines, return a new Operation with bound arguments
+        return Operation(
+            graph=self._graph,
+            head_id=self._head_id,
+            tail_id=self._tail_id,
+            ctx_factory=self._ctx_factory,
+            ctx_type=self._ctx_type,
+            bound_args=args,
+            bound_kwargs=kwargs,
+        )
 
     def __await__(
-        self, *args: P.args, **kwargs: P.kwargs
+        self,
+        *args: Any,
+        **kwargs: Any,
     ) -> Generator[Any, None, Result[R, Exception]]:
         """Make the operation awaitable.
 
         Returns:
             Awaitable that resolves to the execution result.
         """
+        # If we have bound arguments, use them
+        if self._bound_args is not None or self._bound_kwargs is not None:
+            args = self._bound_args or ()
+            kwargs = self._bound_kwargs or {}
+            return self.execute(*args, **kwargs).__await__()
+        # Otherwise, execute with no arguments
         return self.execute(*args, **kwargs).__await__()
 
-    def __rshift__(self, other: "Operation[Concatenate[R, Q], S]") -> "Operation[P, S]":
+    # NOTE: it doesnt matter what the other operation's input type is,
+    #  we only care about the output type and the current operation's input type
+    def __rshift__(self, other: "Operation[..., S]") -> "Operation[P, S]":
         """Compose this operation with another operation.
 
         Args:
@@ -281,6 +299,11 @@ class Operation(Generic[P, R]):
         Returns:
             A string representation.
         """
+        if self._bound_args is not None or self._bound_kwargs is not None:
+            names = " >> ".join(
+                spec.func.__name__ for spec in self._graph.topological_order()
+            )
+            return f"<BoundOperation {names}>"
         names = " >> ".join(
             spec.func.__name__ for spec in self._graph.topological_order()
         )
@@ -325,7 +348,7 @@ class Operation(Generic[P, R]):
         async def _yield(**kwargs: Any) -> BaseContext:
             return cast(BaseContext, kwargs["context"])
 
-        op: Operation[..., BaseContext] = cls._from_function(  # type: ignore[arg-type]
+        op: Operation[..., BaseContext] = cls._from_function(
             _yield, require_ctx=True, ctx_type=context_type
         )
         op._ctx_factory = factory  # remember how to build the ctx
@@ -369,6 +392,8 @@ class Operation(Generic[P, R]):
         Executes the operation pipeline, resolving the context as needed before delegating
         to the executor.
 
+        If this operation has bound arguments, they are used instead of the provided arguments.
+
         Context resolution follows these rules (in order of precedence):
 
             1. If the caller provides a ``context`` keyword argument, it is used directly.
@@ -388,6 +413,11 @@ class Operation(Generic[P, R]):
             Exception: Any exception raised during context creation or pipeline execution
                 will be wrapped in an Error result.
         """
+        # Use bound arguments if they exist
+        if self._bound_args is not None or self._bound_kwargs is not None:
+            args = self._bound_args or () # type: ignore
+            kwargs = self._bound_kwargs or {} # type: ignore
+
         if "context" in kwargs:  # explicit from caller
             ctx = kwargs["context"]
         elif self._ctx_factory is not None:  # implicit via factory
@@ -411,47 +441,6 @@ class Operation(Generic[P, R]):
         """
         return len(self._graph.nodes) == 1
 
-    def transform(self, fn: Callable[[R], S]) -> "Operation[P, S]":
-        """Apply a function to the successful result of this operation.
-
-        Args:
-            fn: Function to apply to the successful value.
-
-        Returns:
-            A new Operation representing the composition.
-        """
-        return self >> Operation._from_function(fn)
-
-    def filter(
-        self,
-        pred: Callable[[R], bool],
-        err_msg: str | Exception = "filter predicate failed",
-    ) -> "Operation[P, R]":
-        """Filter values based on a predicate.
-
-        Args:
-            pred: Predicate function that returns True to keep the value.
-            err_msg: Error message or exception to use when the predicate fails.
-
-        Returns:
-            A new Operation that filters values.
-        """
-
-        # Wrap the filter function to make it compatible with _from_function
-        async def _filter_wrapper(*args: Any, **kwargs: Any) -> R:
-            result = await self.execute(*args, **kwargs)
-            if result.is_error():
-                raise result.error
-
-            value = cast(R, result.default_value(None))
-            if not pred(value):
-                if isinstance(err_msg, Exception):
-                    raise err_msg
-                raise ValueError(err_msg)
-            return value
-
-        return Operation._from_function(_filter_wrapper)
-
     def tap(self, side: Callable[[R], Any]) -> "Operation[P, R]":
         """Apply a side-effect function without changing the value.
 
@@ -473,8 +462,8 @@ class Operation(Generic[P, R]):
                 pass
             return x
 
-        TapStep: Operation[[R], R] = Operation._from_function(
-            cast(Callable[[R], Awaitable[R]], _t),
+        TapStep: Operation[..., R] = Operation._from_function(
+            _t,
             require_ctx=(needs_ctx or self._ctx_type is not None),
             ctx_type=self._ctx_type,
         )
@@ -553,7 +542,7 @@ class Operation(Generic[P, R]):
 
         return Operation._from_function(_retry)
 
-    def __and__(self, other: "Operation[P, S]") -> "Operation[P, tuple[R, S]]":
+    def __and__(self, other: Operation[P, S]) -> Operation[P, Tuple[R, S]]:
         """Run both operations in parallel and return a tuple of results.
 
         Args:
@@ -587,7 +576,7 @@ class Operation(Generic[P, R]):
         parallel_op._ctx_type = self._ctx_type or getattr(other, "_ctx_type", None)
         return parallel_op
 
-    def __or__(self, other: "Operation[P, R]") -> "Operation[P, R]":
+    def __or__(self, other: Operation[P, R]) -> Operation[P, R]:
         """Try this operation first, falling back to the other if this fails.
 
         Args:
@@ -706,7 +695,7 @@ class Operation(Generic[P, R]):
                 raise result.error
             return cast(S, result.default_value(None))
 
-        op: Operation[Concatenate[R, Q], S] = Operation._from_function(  # type: ignore
+        op: Operation[P, S] = Operation._from_function(
             _bind_wrapper,
             require_ctx=self._ctx_type is not None,
             ctx_type=self._ctx_type,
@@ -771,80 +760,6 @@ class Operation(Generic[P, R]):
         return cast(Operation[P, R], self(*args, **kwargs))
 
 
-class _BoundCall(Generic[P, R]):
-    """Stores runtime arguments until `.execute()` is invoked.
-
-    This is an internal class used by Operation to defer execution.
-    """
-
-    __slots__ = ("_pipeline", "_args", "_kwargs")
-
-    def __init__(
-        self,
-        *,
-        pipeline: Operation[P, R],
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-    ):
-        """Initialize a BoundCall.
-
-        Args:
-            pipeline: The Operation to be executed.
-            args: Positional arguments for the operation.
-            kwargs: Keyword arguments for the operation.
-        """
-        self._pipeline = pipeline
-        self._args = args
-        self._kwargs = kwargs
-
-    async def execute(self) -> Result[R, Exception]:
-        """Execute the bound operation with the stored arguments.
-
-        Returns:
-            A Result containing either the successful value or an exception.
-        """
-        return await self._pipeline.execute(*self._args, **self._kwargs)
-
-    def validate(self) -> None:
-        """Validate the underlying pipeline."""
-        self._pipeline.validate()
-
-    def __repr__(self) -> str:
-        """Return a string representation of the bound call.
-
-        Returns:
-            A string representation.
-        """
-        return f"<BoundCall of {self._pipeline!r}>"
-
-    # TODO: is this good practice or bad practice?
-    # adds the misconception that the pipeline is a function instead of a class
-    # users might confuse instantiation with function call ex:
-    # pipeline = add >> add_one
-    # pipeline(1, 2) # this is wrong, it should be pipeline(1, 2).execute() OR pipeline.execute(1, 2)
-    def __call__(
-        self, *args: Any, **kwargs: Any
-    ) -> Any:
-        """Call the underlying pipeline with new arguments.
-
-        Args:
-            *args: Positional arguments.
-            **kwargs: Keyword arguments.
-
-        Returns:
-            A new BoundCall with the given arguments.
-        """
-        return self._pipeline(*args, **kwargs)
-
-    def __await__(self) -> Generator[Any, None, Result[R, Exception]]:
-        """Make the bound call awaitable.
-
-        Returns:
-            Awaitable that resolves to the execution result.
-        """
-        return self.execute().__await__()
-
-
 @overload
 def operation(
     _fn: Callable[P, Awaitable[R]] | Callable[P, R],
@@ -857,17 +772,20 @@ def operation(
     *,
     context: bool = False,
     context_type: type[BaseContext] | None = None,
-) -> Callable[[Callable[P, Awaitable[R]] | Callable[P, R]], Operation[P, R]]: ...
+) -> Callable[
+        [Callable[P, R] | Callable[P, Awaitable[R]]],
+        Operation[P, R] # BUG: currently P and R are interpreted as Never
+    ]: ...
 
 
 def operation(
-    _fn: Callable[P, Awaitable[R]] | Callable[P, R] | None = None,
+    _fn: Callable[P, R] | Callable[P, Awaitable[R]] | None = None,
     *,
     context: bool = False,
     context_type: type[BaseContext] | None = None,
 ) -> (
     Operation[P, R]
-    | Callable[[Callable[P, Awaitable[R]] | Callable[P, R]], Operation[P, R]]
+    | Callable[[Callable[P, R] | Callable[P, Awaitable[R]]], Operation[P, R]]
 ):
     """
     Decorator to create an Operation from a function, with optional context-awareness.
@@ -898,45 +816,52 @@ def operation(
     enforcing that a context is provided at execution time.
     """
 
-    def _decorate(fn: Callable[P, Awaitable[R]] | Callable[P, R]) -> Operation[P, R]:
-        if isinstance(fn, Operation):
-            return fn
-        impl = Operation._from_function(
-            fn,
-            require_ctx=context,
-            ctx_type=context_type,
-        )
-        # Preserve the docstring for better IDE experience
-        if fn.__doc__:
-            impl.__doc__ = fn.__doc__
-        return impl
+    def _decorate(fn: Callable[P, R] | Callable[P, Awaitable[R]]) -> Operation[P, R]:
+            impl = Operation._from_function(
+                fn,
+                require_ctx=context,
+                ctx_type=context_type,
+            )
+            if fn.__doc__:
+                impl.__doc__ = fn.__doc__
+            return impl
 
     if _fn is None:
         return _decorate
 
     return _decorate(_fn)
 
-@operation
-def constant(value: R, *args: Any, **kwargs: Any) -> R:
-    """Create an Operation that always returns the specified value.
+_C = TypeVar("_C")          # for constant
+_I = TypeVar("_I")          # for identity
 
-    Args:
-        value: The constant value to return.
-
-    Returns:
-        An Operation that always returns the value.
+# todo: change to be alias for identity
+def constant(value: _C) -> Operation[..., _C]:
     """
+    Build an Operation that always returns *value* regardless of the input.
+    
+    Example:
+        ```python
+        >>> five = constant(5)        # five is now an Operation
+        >>> (await five.execute()).default_value(None) == 5
+        ... True
+        ```
+    """
+    # The inner function is what actually goes through @operation;
+    # it ignores whatever arguments the pipeline passes in.
+    @operation
+    def _inner(*_args: Any, **_kwargs: Any) -> _C:
+        return value
 
-    return value
+    return _inner
 
 @operation
-def identity(value: R, *args: Any, **kwargs: Any) -> R:
-    """Create an Operation that returns its input unchanged.
-
-    Args:
-        value: The input value.
-
-    Returns:
-        The same value.
+def identity(x: Any) -> Any:
     """
-    return value
+    The identity Operation returns its input unchanged.
+
+    Example:
+    ```python
+    >>> (await identity.execute(42)).default_value(None) == 42
+    True
+    """
+    return x

@@ -68,7 +68,7 @@ def test_has_nested_placeholder(obj: Any, expected: bool) -> None:
     [
         # 1. pure *args – all positionals are forwarded verbatim
         (
-            lambda *args: args,  # type: ignore[return-value]
+            lambda *args: args,
             (1, 2),
             {},
             (3, 4),
@@ -78,7 +78,7 @@ def test_has_nested_placeholder(obj: Any, expected: bool) -> None:
         ),
         # 2. runtime keyword overrides template keyword
         (
-            lambda a, b: (a, b),  # type: ignore[return-value]
+            lambda a, b: (a, b),
             (),
             {"a": 10},
             (),
@@ -88,7 +88,7 @@ def test_has_nested_placeholder(obj: Any, expected: bool) -> None:
         ),
         # 3. precedence: runtime positional > template positional > template kw
         (
-            lambda a, b, c: (a, b, c),  # type: ignore[return-value]
+            lambda a, b, c: (a, b, c),
             (0,),  # template positional for *b*
             {"c": 9},  # template kw for *c*
             (1,),  # runtime positional for *a*
@@ -98,7 +98,7 @@ def test_has_nested_placeholder(obj: Any, expected: bool) -> None:
         ),
         # 4. empty runtime args – expect pristine template
         (
-            lambda a, b=2: (a, b),  # type: ignore[return-value]
+            lambda a, b=2: (a, b),
             (42,),
             {"b": 5},
             (),
