@@ -11,6 +11,7 @@ from typing import (
     cast,
     Any,
     Awaitable,
+    Coroutine,
     Callable,
     Dict,
     List,
@@ -53,7 +54,8 @@ S = TypeVar("S")  # return value of *another* operation/function
 E = TypeVar("E", bound=Exception)  # error type
 
 
-
+# TODO: for ease of development, return direct values or exceptions
+# TODO: fix type for async operations
 
 def _ensure_async(fn: Callable[..., R]) -> Callable[..., Awaitable[R]]:
     """Wrap a sync function so that it is awaitable.
@@ -188,8 +190,18 @@ class Operation(Generic[P, R]):
             ctx_type=ctx_type,
         ))
 
+    @overload
     def __call__(
         self, *args: P.args, **kwargs: P.kwargs
+    ) -> "Operation[P, R]": ...
+
+    @overload  
+    def __call__(
+        self, *args: Union[Placeholder, Any], **kwargs: Union[Placeholder, Any]
+    ) -> "Operation[P, R]": ...
+
+    def __call__(
+        self, *args: Any, **kwargs: Any
     ) -> "Operation[P, R]":
         """Call the operation with the given arguments.
 
@@ -240,6 +252,7 @@ class Operation(Generic[P, R]):
             bound_args=args,
             bound_kwargs=kwargs,
         )
+
 
     def __await__(
         self,
@@ -387,7 +400,13 @@ class Operation(Generic[P, R]):
             ctx_type=self._ctx_type,
         )
 
-    async def execute(self, *args: P.args, **kwargs: P.kwargs) -> Result[R, Exception]:
+    @overload
+    async def execute(self) -> Result[R, Exception]: ...
+
+    @overload
+    async def execute(self, *args: P.args, **kwargs: P.kwargs) -> Result[R, Exception]: ...
+
+    async def execute(self, *args: Any, **kwargs: Any) -> Result[R, Exception]:
         """
         Executes the operation pipeline, resolving the context as needed before delegating
         to the executor.
@@ -649,6 +668,7 @@ class Operation(Generic[P, R]):
 
         return Operation._from_function(_comb)
 
+    # TODO: remove this and replace it with a real bind method, like js bind or haskell's bind
     def bind(
         self, builder: Callable[[R], "Operation[Q, S]" | Callable[..., Any]]
     ) -> "Operation[P, S]":
@@ -765,6 +785,10 @@ def operation(
     _fn: Callable[P, Awaitable[R]] | Callable[P, R],
 ) -> Operation[P, R]: ...
 
+@overload
+def operation(
+    _fn: Callable[P, Coroutine[Any, Any, R]],
+) -> Operation[P, R]: ...
 
 @overload
 def operation(
@@ -773,8 +797,8 @@ def operation(
     context: bool = False,
     context_type: type[BaseContext] | None = None,
 ) -> Callable[
-        [Callable[P, R] | Callable[P, Awaitable[R]]],
-        Operation[P, R] # BUG: currently P and R are interpreted as Never
+        [Callable[P, R] | Callable[P, Awaitable[R]] | Callable[P, Coroutine[Any, Any, R]]],
+        Operation[P, R] 
     ]: ...
 
 
