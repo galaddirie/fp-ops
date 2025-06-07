@@ -48,11 +48,11 @@ def fail(exc: Union[str, Exception, Type[Exception]]) -> Operation[Any, None]:
     return cast(Operation[Any, None], _always_error)
 
 def attempt(
-    risky_fn: Callable[P, Awaitable[S]] | Callable[P, S],
+    risky_fn: Callable[P, R],
     *,
     context: bool = False,
     context_type: Type[BaseContext] | None = None,
-) -> Operation[P, S]:
+) -> Operation[P, R]:
     """
     Wrap any synchronous or asynchronous callable as an Operation that
     automatically catches exceptions and returns them as `Result.Error`.
@@ -84,8 +84,7 @@ def attempt(
 
 
     if context or context_type:
-        return cast(Operation[P, S],
-                    operation(context=context, context_type=context_type)(risky_fn))
+        return operation(context=context, context_type=context_type)(risky_fn)
     # fast-path no context awareness requested
     return operation(risky_fn)
 
