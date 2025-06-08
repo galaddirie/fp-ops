@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.11] - 2025-06-09
+
+### Added
+- Added pydantic model and dataclass support to the `build` operation, making it easier to create type-safe objects from data
+
+### Changed
+- **Build Operation API**: Updated `build` operation to support model instantiation:
+  - Added optional `model` parameter for type-safe object construction
+  - Improved error messages for validation failures
+  - Better handling of optional fields and defaults
+  - More robust type conversion and validation
+
 ## [0.2.10] - 2025-06-08
 
 ### Changed
