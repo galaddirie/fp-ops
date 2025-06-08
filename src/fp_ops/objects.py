@@ -99,6 +99,8 @@ async def _resolve_operation(op: "Operation", data: Any, **kwargs: Any) -> Any:
     return None                                 # should not reach here
 
 
+# BUG:  build does not respect bound operations
+
 def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
     """
     Build an object from a schema. Values can be static, callables, or operations.
@@ -111,6 +113,22 @@ def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
             "isActive": True
         })(data)
     """
+    # Quick check if any operation in schema requires context
+    require_ctx = False
+    ctx_type = None
+    
+    for value in schema.values():
+        if isinstance(value, Operation):
+            # Check the operation's graph for context requirements
+            for spec in value._graph._nodes.values():
+                if spec.require_ctx:
+                    require_ctx = True
+                    if spec.ctx_type:
+                        ctx_type = spec.ctx_type
+                    break
+        if require_ctx:
+            break
+    
     async def _build(data: Any, **op_kwargs: Any) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
 
@@ -134,7 +152,7 @@ def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
 
         return result
     
-    return operation(_build)
+    return operation(context=require_ctx, context_type=ctx_type)(_build)
 
 
 def merge(*sources: Union[Dict[str, Any],

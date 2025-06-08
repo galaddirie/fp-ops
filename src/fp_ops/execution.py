@@ -119,9 +119,9 @@ def _merge_first_call(
     named parameter — we simply forward them as real positionals.
 
     Precedence for *named* parameters (no ``*args``):
-        1. runtime keyword
-        2. runtime positional (in order)
-        3. pre-bound constant
+        1. runtime keyword  (explicit override)
+        2. pre-bound constant (template kwarg or positional)
+        3. runtime positional (fills the next still-empty slot)
     """
     
     # Fast path ── the callee exposes *args → keep all positional args
@@ -142,44 +142,35 @@ def _merge_first_call(
     final: Dict[str, Any] = {}
 
     base_pos = iter(base_args)
-    rt_pos = iter(rt_args)
+    rt_pos  = iter(rt_args)
 
     for name in param_names:
-        if name in rt_kwargs:          # runtime kwarg top priority
+        # explicit runtime keyword – always wins
+        if name in rt_kwargs:
             final[name] = rt_kwargs[name]
             continue
 
-        try:                           # then runtime positional …
+        # value already bound by the template
+        if name in base_kwargs:
+            final[name] = base_kwargs[name]
+            continue
+        else:
+            try:                       # … or positional constant from template
+                final[name] = next(base_pos)
+                continue
+            except StopIteration:
+                pass
+
+        # finally, consume a runtime positional argument
+        try:
             final[name] = next(rt_pos)
             continue
         except StopIteration:
-            pass
+            pass                       # leave unset → Python default applies
 
-        if name in base_kwargs:        # then template kwarg …
-            final[name] = base_kwargs[name]
-            continue
+    # any left-over runtime positional args → quietly ignore them
+    _ = list(rt_pos)  # just consume & drop
 
-        try:                           # finally template positional
-            final[name] = next(base_pos)
-        except StopIteration:
-            # let Python supply its own default (if any)
-            pass
-
-    # any left-over runtime positionals → too many arguments
-    remaining_rt_pos = list(rt_pos)
-    if remaining_rt_pos:
-        # Get the actual number of positional args expected
-        pos_params = [p for p in signature.parameters.values() 
-                      if p.kind in (inspect.Parameter.POSITIONAL_ONLY, 
-                                    inspect.Parameter.POSITIONAL_OR_KEYWORD)]
-        raise TypeError(
-            f"Too many positional arguments: got {len(rt_args)} (rt_args={rt_args!r}), "
-            f"expected at most {len(pos_params)} for parameters {[p.name for p in pos_params]!r}. "
-            f"Signature: {signature!r}, "
-            f"base_args={base_args!r}, base_kwargs={base_kwargs!r}, "
-            f"rt_args={rt_args!r}, rt_kwargs={rt_kwargs!r}"
-        )
-        
     for k, v in rt_kwargs.items():
         if k not in final:
             final[k] = v
@@ -227,39 +218,82 @@ class Executor:
         for idx, spec in enumerate(self._plan.order):
             # Build call-args
             if idx == 0:
-                base_args_from_template, base_kwargs_from_template = self._plan.arg_render[spec.id](None, None)
+                tpl = spec.template
+                base_args, base_kwargs = self._plan.arg_render[spec.id](None, None)
 
-                if spec.template.has_placeholders() and first_args:
-                    rendered_args, rendered_kwargs = spec.template.render(first_args[0])
-                    
-                    args_for_merge = rendered_args
-                    kwargs_for_merge = rendered_kwargs
+                # 1️⃣ If any placeholders exist, fill them immediately:
+                if tpl.has_placeholders() and first_args:
+                    # — direct positional placeholders? (e.g. op(_, _))
+                    if tpl._pos_indices:
+                        # how many placeholders total?
+                        total_ph = len(tpl._pos_indices) + len(tpl._kw_keys)
+                        vals = list(first_args[:total_ph])
+                        it = iter(vals)
 
-                    template_args_had_placeholder = False
-                    # Check the original .args part of the current node's template for placeholders
-                    if isinstance(spec.template.args, tuple):
-                        for arg_val in spec.template.args:
-                            if _has_nested_placeholder(arg_val):
-                                template_args_had_placeholder = True
-                                break
-                    
-                    if template_args_had_placeholder:
-                        # Placeholder was in template.args, first_args[0] filled it positionally.
-                        # Remaining runtime positional args are from first_args[1:].
-                        rt_args_for_merge = first_args[1:]
+                        # build the new positional args
+                        new_args = tuple(
+                            (next(it) if i in tpl._pos_indices else tpl.args[i])
+                            for i in range(len(tpl.args))
+                        )
+
+                        # build the new direct kwargs
+                        new_kwargs: dict[str, Any] = {}
+                        for k, v in tpl.kwargs.items():
+                            if k in tpl._kw_keys:
+                                new_kwargs[k] = next(it)
+                            else:
+                                new_kwargs[k] = v
+
+                        args_for_merge      = new_args
+                        kwargs_for_merge    = new_kwargs
+                        rt_args_for_merge   = tuple(first_args[total_ph:])
+                        rt_kwargs_for_merge = first_kwargs
+
                     else:
-                        # Placeholder was likely in template.kwargs, or template.args was empty/had no placeholders.
-                        # first_args[0] is potentially still a valid runtime positional arg for _merge_first_call.
-                        rt_args_for_merge = first_args
+                        # — nested‐only placeholders (e.g. meta={"payload": _})
+                        #   override *all* static args with the same value
+                        rendered_args2, rendered_kwargs2 = tpl.render(first_args[0])
+
+                        # prepare kwargs: start with the template‐rendered kwargs
+                        merged_kwargs: dict[str, Any] = dict(rendered_kwargs2)
                         
+                        # then override the first positional param with the fill value
+                        param_names = [
+                            n for n in spec.signature.parameters
+                            if n not in ("self", "context")
+                        ]
+                        if param_names:
+                            merged_kwargs[param_names[0]] = first_args[0]
+
+                        args_for_merge      = ()
+                        kwargs_for_merge    = merged_kwargs
+                        rt_args_for_merge   = tuple(first_args[1:])
+                        rt_kwargs_for_merge = first_kwargs
+
+                # 2️⃣ No placeholders at head:
+                elif len(self._plan.order) == 1:
+                    # single‐step with no placeholders → forward everything
+                    args_for_merge      = base_args
+                    kwargs_for_merge    = base_kwargs
+                    rt_args_for_merge   = first_args
                     rt_kwargs_for_merge = first_kwargs
+
                 else:
-                    # No placeholders in spec.template to render with first_args[0], or no first_args provided.
-                    args_for_merge = base_args_from_template
-                    kwargs_for_merge = base_kwargs_from_template
-                    rt_args_for_merge = first_args
-                    rt_kwargs_for_merge = first_kwargs
-                
+                    # multi‐step pipeline with no placeholders at head
+                    if tpl.args or tpl.kwargs:
+                        # head was pre-bound → drop call-time
+                        args_for_merge      = base_args
+                        kwargs_for_merge    = base_kwargs
+                        rt_args_for_merge   = ()
+                        rt_kwargs_for_merge = {}
+                    else:
+                        # head unbound → forward call-time inputs
+                        args_for_merge      = base_args
+                        kwargs_for_merge    = base_kwargs
+                        rt_args_for_merge   = first_args
+                        rt_kwargs_for_merge = first_kwargs
+
+                # finally, merge into the signature
                 args, kwargs = _merge_first_call(
                     spec.signature,
                     args_for_merge, kwargs_for_merge,

@@ -86,15 +86,15 @@ def test_has_nested_placeholder(obj: Any, expected: bool) -> None:
             (),
             {"a": 99, "b": 0},
         ),
-        # 3. precedence: runtime positional > template positional > template kw
+        # 3. precedence: template positional fills first, then runtime positional fills next
         (
             lambda a, b, c: (a, b, c),
-            (0,),  # template positional for *b*
+            (0,),  # template positional for *a*
             {"c": 9},  # template kw for *c*
-            (1,),  # runtime positional for *a*
+            (1,),  # runtime positional for *b*
             {},
             (),
-            {"a": 1, "b": 0, "c": 9},
+            {"a": 0, "b": 1, "c": 9},
         ),
         # 4. empty runtime args – expect pristine template
         (
@@ -133,15 +133,16 @@ def test_merge_first_call_happy_path(
 
 
 def test_merge_first_call_too_many_positional() -> None:
-    """Supplying more positionals than parameters should raise *TypeError*."""
+    """Supplying more positionals than parameters should be silently ignored."""
 
     def f(a):  # noqa: D401 – simple stub
         return a
 
     sig = inspect.signature(f)
 
-    with pytest.raises(TypeError):
-        _merge_first_call(sig, (), {}, (1, 2), {})
+    # Extra positional args (2, 3) are silently ignored
+    args, kwargs = _merge_first_call(sig, (), {}, (1, 2, 3), {})
+    assert kwargs == {"a": 1}
 
 
 # ---------------------------------------------------------------------

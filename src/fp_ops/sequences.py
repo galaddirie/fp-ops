@@ -96,6 +96,19 @@ def map(
         map(lambda items: len(items))({"cat1": [...], "cat2": [...]})  # Dict → Dict
     """
 
+    # Check if the mapped operation requires context
+    require_ctx = False
+    ctx_type = None
+    
+    if isinstance(fn, Operation):
+        # Check if the operation requires context
+        for spec in fn._graph._nodes.values():
+            if spec.require_ctx:
+                require_ctx = True
+                if spec.ctx_type:
+                    ctx_type = spec.ctx_type
+                break
+
     async def _map(items: Union[List[T], Dict[str, T]], **op_kwargs: Any) -> Union[List[R], Dict[str, R]]:
         if isinstance(items, dict):
             # Handle dictionary - map over values, preserve keys
@@ -122,7 +135,7 @@ def map(
             return out_list
         return [fn(item) for item in items]  # type: ignore[arg-type]
 
-    return operation(_map)
+    return operation(context=require_ctx, context_type=ctx_type)(_map)
 
 
 def reduce(

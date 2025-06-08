@@ -367,7 +367,7 @@ class TestOverloading:
         pipeline = add(1,2) >> add_one
         result = await pipeline(1,0)
         assert result.is_ok()
-        assert result.default_value(None) == 2
+        assert result.default_value(None) == 4
 
     @pytest.mark.asyncio
     async def test_operation_with_missing_arguments(self):
