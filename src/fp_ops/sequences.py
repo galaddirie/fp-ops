@@ -96,13 +96,13 @@ def map(
         map(lambda items: len(items))({"cat1": [...], "cat2": [...]})  # Dict → Dict
     """
 
-    async def _map(items: Union[List[T], Dict[str, T]]) -> Union[List[R], Dict[str, R]]:
+    async def _map(items: Union[List[T], Dict[str, T]], **op_kwargs) -> Union[List[R], Dict[str, R]]:
         if isinstance(items, dict):
             # Handle dictionary - map over values, preserve keys
             if isinstance(fn, Operation):
                 out_dict: Dict[str, R] = {}
                 for key, value in items.items():
-                    res = await fn.execute(value)
+                    res = await fn.execute(value, **op_kwargs)
                     if res.is_ok():
                         out_dict[key] = res.default_value(cast(R, None))
                     else:
@@ -114,7 +114,7 @@ def map(
         if isinstance(fn, Operation):
             out_list: List[R] = []
             for item in items:  # type: ignore[arg-type]
-                res = await fn.execute(item)
+                res = await fn.execute(item, **op_kwargs)
                 if res.is_ok():
                     out_list.append(res.default_value(cast(R, None)))
                 else:

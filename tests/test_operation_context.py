@@ -10,9 +10,22 @@ from fp_ops.operator import (
 )
 from fp_ops.flow import branch, attempt, fail
 from fp_ops.sequences import map, filter
+from fp_ops.objects import build
 from fp_ops.decorators import operation
 from fp_ops.context import BaseContext
 from fp_ops.placeholder import _
+
+class DummyCtx(BaseContext):
+    """Bare-bones context so we can pass something concrete."""
+    tag: str = "dummy"
+
+def _must_have_ctx(data, *, context: DummyCtx) -> str:
+    assert isinstance(context, DummyCtx), "context not forwarded!"
+    return f"seen-{context.tag}"
+
+@pytest.fixture
+def needs_ctx():
+    return operation(_must_have_ctx, context=True)
 
 class TestContext(BaseContext):
     value: str = "default"
@@ -600,3 +613,31 @@ class TestComplexContextScenarios:
         negative_result = await branch_op(context=negative_context)
         assert negative_result.is_ok()
         assert negative_result.default_value(None) == "Non-positive counter: 0"
+
+class TestContextForwarding:
+    """Tests for context forwarding behavior in operations like build() and map()."""
+    
+    
+    @pytest.mark.asyncio
+    async def test_build_forwards_context(self, needs_ctx):
+        """Test that build() forwards context to nested operations."""
+        schema = {"msg": needs_ctx}
+        b = build(schema)
+
+        ctx = DummyCtx(tag="B")
+        res = await b.execute({}, context=ctx)
+
+        assert res.is_ok()
+        assert res.default_value(None) == {"msg": "seen-B"}
+
+    @pytest.mark.asyncio
+    async def test_map_forwards_context(self, needs_ctx):
+        """Test that map() forwards context to item-level operations."""
+        m = map(needs_ctx)
+        items = [{}, {}]
+
+        ctx = DummyCtx(tag="M")
+        res = await m.execute(items, context=ctx)
+
+        assert res.is_ok()
+        assert res.default_value([]) == ["seen-M", "seen-M"]
