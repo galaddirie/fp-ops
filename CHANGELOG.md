@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.7] - 2025-05-28
+
+### Fixed
+-  Fixed type errors with @operation() decorator and its overloads
+-  Fixed type signature of attempt() function to properly handle return types
+
 ## [0.2.6] - 2025-05-27
 
 ### Added
