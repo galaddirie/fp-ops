@@ -3,7 +3,7 @@ Core data operations for FP-Ops that provide ergonomic data handling
 without expanding the DSL significantly.
 """
 from __future__ import annotations
-from typing import Any, Dict, List, Callable, TypeVar, Union, Tuple, Optional, overload, Type
+from typing import Any, Dict, List, Callable, TypeVar, Union, Tuple, Optional, cast, Type, overload, Protocol, runtime_checkable
 from dataclasses import is_dataclass
 from functools import reduce
 from fp_ops import operation, Operation
@@ -104,6 +104,18 @@ R = TypeVar('R')
 
 
 
+# Protocol for Pydantic v2 models
+@runtime_checkable
+class PydanticV2Model(Protocol):
+    @classmethod
+    def model_validate(cls, obj: Any) -> Any: ...
+
+# Protocol for Pydantic v1 models
+@runtime_checkable
+class PydanticV1Model(Protocol):
+    @classmethod
+    def parse_obj(cls, obj: Any) -> Any: ...
+
 @overload
 def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
     ...
@@ -177,7 +189,7 @@ def build(
         if require_ctx:
             break
     
-    async def _build(data: Any, **op_kwargs: Any) -> Union[Dict[str, Any], T]:
+    async def _build(data: Any, **op_kwargs: Any) -> Any:  # Return Any to avoid type issues
         result: Dict[str, Any] = {}
 
         for key, value in schema.items():
@@ -201,13 +213,13 @@ def build(
         # If a model class was provided, instantiate it
         if model is not None:
             try:
-                # Check if it's a Pydantic model
+                # Check if it's a Pydantic model using duck typing
                 if hasattr(model, 'model_validate'):
                     # Pydantic v2
-                    return model.model_validate(result)
+                    return model.model_validate(result)    # type: ignore[attr-defined]
                 elif hasattr(model, 'parse_obj'):
                     # Pydantic v1
-                    return model.parse_obj(result)
+                    return model.parse_obj(result)         # type: ignore[attr-defined]
                 elif is_dataclass(model):
                     # Standard dataclass
                     return model(**result)
@@ -221,7 +233,7 @@ def build(
         
         return result
     
-    return operation(context=require_ctx, context_type=ctx_type)(_build)
+    return operation(context=require_ctx, context_type=ctx_type)(_build) # type: ignore[arg-type]
 
 def merge(*sources: Union[Dict[str, Any],
                           Callable[[Any], Dict[str, Any]],
