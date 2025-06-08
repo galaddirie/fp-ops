@@ -3,12 +3,10 @@ Core data operations for FP-Ops that provide ergonomic data handling
 without expanding the DSL significantly.
 """
 from __future__ import annotations
-from typing import Any, Dict, List, Callable, TypeVar, Union, Tuple, Optional, cast, AsyncGenerator
+from typing import Any, Dict, List, Callable, TypeVar, Union, Tuple, Optional, overload, Type
+from dataclasses import is_dataclass
 from functools import reduce
 from fp_ops import operation, Operation
-
-T = TypeVar('T')
-R = TypeVar('R')
 
 """
 Note: These functions return Operations (not values) to enable better composition.
@@ -99,19 +97,69 @@ async def _resolve_operation(op: "Operation", data: Any, **kwargs: Any) -> Any:
     return None                                 # should not reach here
 
 
-# BUG:  build does not respect bound operations
 
+
+T = TypeVar('T')
+R = TypeVar('R')
+
+
+
+@overload
 def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
+    ...
+
+@overload
+def build(schema: Dict[str, Any], model: Type[T]) -> Operation[[Any], T]:
+    ...
+
+def build(
+    schema: Dict[str, Any], 
+    model: Optional[Type[T]] = None
+) -> Union[Operation[[Any], Dict[str, Any]], Operation[[Any], T]]:
     """
     Build an object from a schema. Values can be static, callables, or operations.
     
-    Example:
+    Args:
+        schema: Dictionary mapping field names to values, callables, or operations
+        model: Optional model class (dataclass or Pydantic model) to instantiate
+               with the built dictionary
+    
+    Returns:
+        Operation that builds either a dictionary or an instance of the model class
+    
+    Examples:
+        # Return a dictionary (backward compatible)
         build({
             "id": get("user_id"),
             "fullName": lambda d: f"{d['first_name']} {d['last_name']}",
             "email": get("contact.email"),
             "isActive": True
-        })(data)
+        })
+        
+        # Return a Pydantic model instance
+        class UserProfile(BaseModel):
+            id: int
+            fullName: str
+            email: str
+            isActive: bool
+            
+        build({
+            "id": get("user_id"),
+            "fullName": lambda d: f"{d['first_name']} {d['last_name']}",
+            "email": get("contact.email"),
+            "isActive": True
+        }, UserProfile)
+        
+        # Return a dataclass instance
+        @dataclass
+        class BookDetails:
+            title: str
+            price: str
+            
+        extract_book_details: Operation[[ElementHandle], BookDetails] = build({
+            "title": GetText("h3 > a"),
+            "price": GetText("p.price_color"),
+        }, BookDetails)
     """
     # Quick check if any operation in schema requires context
     require_ctx = False
@@ -129,7 +177,7 @@ def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
         if require_ctx:
             break
     
-    async def _build(data: Any, **op_kwargs: Any) -> Dict[str, Any]:
+    async def _build(data: Any, **op_kwargs: Any) -> Union[Dict[str, Any], T]:
         result: Dict[str, Any] = {}
 
         for key, value in schema.items():
@@ -150,10 +198,30 @@ def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
                 # Handle static values
                 result[key] = value
 
+        # If a model class was provided, instantiate it
+        if model is not None:
+            try:
+                # Check if it's a Pydantic model
+                if hasattr(model, 'model_validate'):
+                    # Pydantic v2
+                    return model.model_validate(result)
+                elif hasattr(model, 'parse_obj'):
+                    # Pydantic v1
+                    return model.parse_obj(result)
+                elif is_dataclass(model):
+                    # Standard dataclass
+                    return model(**result)
+                else:
+                    # Try generic instantiation (works for most classes)
+                    return model(**result)
+            except Exception as e:
+                # If model instantiation fails, you might want to handle this
+                # differently based on your error handling strategy
+                raise ValueError(f"Failed to instantiate {model.__name__}: {e}")
+        
         return result
     
     return operation(context=require_ctx, context_type=ctx_type)(_build)
-
 
 def merge(*sources: Union[Dict[str, Any],
                           Callable[[Any], Dict[str, Any]],
