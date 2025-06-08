@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.9] - 2025-06-07
+
+### Fixed
+- fixed type errors
+
+
 ## [0.2.8] - 2025-05-29
 
 ### Added

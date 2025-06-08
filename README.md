@@ -1,6 +1,6 @@
 # FP-Ops: Functional Programming Operations for Python
 
-[![PyPI version](https://img.shields.io/badge/pypi-v0.2.8-blue.svg)](https://pypi.org/project/fp-ops/)
+[![PyPI version](https://img.shields.io/badge/pypi-v0.2.9-blue.svg)](https://pypi.org/project/fp-ops/)
 [![Python versions](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/fp-ops/)
 [![codecov](https://codecov.io/gh/galaddirie/fp-ops/graph/badge.svg?token=8MHGFYBD8V)](https://codecov.io/gh/galaddirie/fp-ops)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
