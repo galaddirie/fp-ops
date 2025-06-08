@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.2.10] - 2025-06-08
+
+### Changed
+- **Argument Precedence**: Updated how arguments are merged in operations:
+  - Runtime keyword args (explicit overrides) now have highest priority
+  - Pre-bound constants (template kwargs/positionals) come next
+  - Runtime positionals fill remaining empty slots
+  - Extra positional args are now silently ignored instead of raising TypeError
+- **Placeholder Handling**: Improved how placeholders are processed:
+  - Better handling of direct positional placeholders
+  - More robust nested placeholder resolution
+  - Enhanced multi-step pipeline handling
+- **Context Awareness**: Added automatic context detection and forwarding:
+  - `build` operation now properly detects and forwards context requirements
+  - `map` operation automatically inherits context requirements from mapped operation
+  - Added context type inference for better type safety
+
+### Fixed
+- Fixed binding behavior to respect pre-bound operations
+- Improved test coverage for argument precedence and binding
+- Fixed context propagation in complex operation pipelines
+
 ## [0.2.9] - 2025-06-07
 
 ### Fixed
