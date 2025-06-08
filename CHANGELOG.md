@@ -1,10 +1,31 @@
 # Changelog
 
+## [0.2.8] - 2025-05-29
+
+### Added
+- Added a new helper function to handle chained and nested operations, making it easier to work with complex operation pipelines
+- Made the build operation more powerful:
+  - It now properly handles nested operations and forwards context through the entire pipeline
+  - Better distinction between callable functions and built-in types
+  - More graceful handling of operation failures
+- Updated the map operation to correctly pass context to each item being processed
+- Added a bunch of new tests covering:
+  - How operations work inside object schemas
+  - Context forwarding through different operation types
+  - Complex nested operations in schemas
+  - Various error scenarios and how they're handled
+
+### Changed
+- Made operation execution more reliable, especially when operations are chained together
+- Improved how context flows through nested operations and object schemas, making it more predictable
+
+
 ## [0.2.7] - 2025-05-28
 
 ### Fixed
 -  Fixed type errors with @operation() decorator and its overloads
 -  Fixed type signature of attempt() function to properly handle return types
+
 
 ## [0.2.6] - 2025-05-27
 
