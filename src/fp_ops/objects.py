@@ -78,6 +78,27 @@ def get(path: str, default: Any = None) -> Operation[[Any], Any]:
     return operation(_get_inner)
 
 
+async def _resolve_operation(op: "Operation", data: Any, **kwargs: Any) -> Any:
+    """
+    Execute *op* and, if the successful result is itself an Operation,
+    keep executing until we obtain a real value (or hit an error).
+    """
+    current: "Operation | None" = op
+
+    while isinstance(current, Operation):
+        res = await current.execute(data, **kwargs)
+        if not res.is_ok():
+            return None
+
+        value = res.default_value(None)
+        if isinstance(value, Operation):
+            current = value                     # loop again
+        else:
+            return value                        # final concrete value
+
+    return None                                 # should not reach here
+
+
 def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
     """
     Build an object from a schema. Values can be static, callables, or operations.
@@ -90,24 +111,25 @@ def build(schema: Dict[str, Any]) -> Operation[[Any], Dict[str, Any]]:
             "isActive": True
         })(data)
     """
-    async def _build(data: Any) -> Dict[str, Any]:
+    async def _build(data: Any, **op_kwargs: Any) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
 
         for key, value in schema.items():
             if isinstance(value, Operation):
-                # Handle operations
-                res = await value.execute(data)
-                # Always create the field; use None on error
-                result[key] = res.default_value(None) if res.is_ok() else None
+                # Fully resolve chained / nested operations
+                result[key] = await _resolve_operation(value, data, **op_kwargs)
+            elif isinstance(value, dict):
+                # Handle nested dictionaries
+                nested = await build(value).execute(data, **op_kwargs)
+                result[key] = nested.default_value({})
             elif callable(value) and not isinstance(value, (type, bool, int, float, str)):
+                # Handle callables (but not built-in types)
                 try:
                     result[key] = value(data)
                 except Exception:
                     result[key] = None
-            elif isinstance(value, dict):
-                nested = await build(value).execute(data)
-                result[key] = nested.default_value({})
             else:
+                # Handle static values
                 result[key] = value
 
         return result
@@ -177,7 +199,6 @@ def merge(*sources: Union[Dict[str, Any],
             elif callable(src):
                 update = src(data)
             else:
-                # src is a dict - need to evaluate any Operations within it
                 update = {}
                 for key, value in src.items():
                     if isinstance(value, Operation):

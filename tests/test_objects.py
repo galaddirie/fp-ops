@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 from dataclasses import dataclass
 
 # Assuming these imports based on the provided code
-from fp_ops import operation, Operation
+from fp_ops import operation, Operation, identity
 from fp_ops.objects import get, build, merge, update
 from fp_ops.primitives import _, Placeholder
 from expression import Ok, Error, Result
@@ -914,6 +914,301 @@ class TestIntegration:
         assert norm_v2["id"] == 456
         assert norm_v2["username"] == "newuser"
         assert norm_v2["email"] == "new@example.com"
+
+
+# Test handling of Operation values
+class TestOperationValues:
+    """Test suite for handling Operation values in object operations."""
+    
+    @pytest.mark.asyncio
+    async def test_simple_math_operations(self):
+        """Test simple math operations in object operations."""
+        # Create some simple math operations
+        @operation
+        def double(x: int) -> int:
+            return x * 2
+        
+        @operation
+        def add_ten(x: int) -> int:
+            return x + 10
+        
+        # Test in build
+        schema = {
+            "original": identity,          #  ← echo the value that is fed in
+            "doubled": double,
+            "plus_ten": add_ten,
+            "combined": double >> add_ten,
+        }
+        
+        build_op = build(schema)
+        result = await build_op.execute(5)
+        assert result.is_ok()
+        output = result.default_value(None)
+        assert output["original"] == 5
+        assert output["doubled"] == 10
+        assert output["plus_ten"] == 15
+        assert output["combined"] == 20
+        
+        # Test in merge
+        merge_op = merge(
+            {"base": get("value")},
+            {"doubled": get("value") >> double},
+            {"plus_ten": get("value") >> add_ten}
+        )
+        result = await merge_op.execute({"value": 5})
+        assert result.is_ok()
+        output = result.default_value(None)
+        assert output["base"] == 5
+        assert output["doubled"] == 10
+        assert output["plus_ten"] == 15
+    
+    @pytest.mark.asyncio
+    async def test_context_based_operations(self):
+        """Test operations that depend on multiple fields and context."""
+        @operation
+        def calculate_score(data: Dict) -> int:
+            base = data.get("base_score", 0)
+            multiplier = data.get("multiplier", 1)
+            bonus = data.get("bonus", 0)
+            return (base * multiplier) + bonus
+        
+        @operation
+        def format_user_info(data: Dict) -> Dict:
+            name = data.get("name", "")
+            role = data.get("role", "user")
+            return {
+                "display_name": f"{name} ({role})",
+                "is_admin": role == "admin"
+            }
+        
+        # Test in build with context-dependent operations
+        schema = {
+            "user": format_user_info,
+            "score": calculate_score,
+            "summary": (
+                lambda d: (
+                    f"Score: {(d.get('base_score', 0) * d.get('multiplier', 1)) + d.get('bonus', 0)}, "
+                    f"User: {d.get('name', '')} ({d.get('role', 'user')})"
+                )
+            ),
+        }
+        
+        build_op = build(schema)
+        result = await build_op.execute({
+            "name": "Alice",
+            "role": "admin",
+            "base_score": 100,
+            "multiplier": 2,
+            "bonus": 50
+        })
+        assert result.is_ok()
+        output = result.default_value(None)
+        assert output["user"]["display_name"] == "Alice (admin)"
+        assert output["user"]["is_admin"] is True
+        assert output["score"] == 250  # (100 * 2) + 50
+        assert "Score: 250, User: Alice (admin)" in output["summary"]
+    
+    @pytest.mark.asyncio
+    async def test_chained_operations(self):
+        """Test chaining multiple operations together."""
+        @operation
+        def validate_age(data: Dict) -> int:
+            age = data.get("age", 0)
+            if age < 0:
+                raise ValueError("Age cannot be negative")
+            return age
+
+        @operation
+        def age_category(age: int) -> str:
+            if age < 18:
+                return "minor"
+            elif age < 65:
+                return "adult"
+            else:
+                return "senior"
+
+        @operation
+        def format_age_info(age: int, category: str) -> Dict:
+            return {
+                "age": age,
+                "category": category,
+                "can_vote": category != "minor",
+                "description": f"{age} year old {category}"
+            }
+
+        # Create a proper operation that composes the others
+        @operation
+        async def get_formatted_age_info(data: Dict) -> Dict:
+            # First validate and get the age
+            age_result = await validate_age.execute(data)
+            if not age_result.is_ok():
+                raise age_result.error
+            age = age_result.default_value(0)
+            
+            # Then get the category
+            category_result = await age_category.execute(age)
+            if not category_result.is_ok():
+                raise category_result.error
+            category = category_result.default_value("")
+            
+            # Finally format the age info
+            info_result = await format_age_info.execute(age, category)
+            if not info_result.is_ok():
+                raise info_result.error
+            return info_result.default_value({})
+
+        # Use the composed operation
+        age_pipeline = get_formatted_age_info
+
+        # Test in build
+        schema = {
+            "user_info": get("name"),
+            "age_info": age_pipeline
+        }
+
+        build_op = build(schema)
+
+        # Test valid age
+        result = await build_op.execute({"name": "Bob", "age": 25})
+        assert result.is_ok()
+        output = result.default_value(None)
+        assert output["user_info"] == "Bob"
+        assert output["age_info"]["age"] == 25
+        assert output["age_info"]["category"] == "adult"
+        assert output["age_info"]["can_vote"] == True
+        assert output["age_info"]["description"] == "25 year old adult"
+
+        # Test invalid age
+        result = await build_op.execute({"name": "Alice", "age": -5})
+        assert result.is_ok()
+
+        # Test minor
+        result = await build_op.execute({"name": "Charlie", "age": 16})
+        assert result.is_ok()
+        output = result.default_value(None)
+        assert output["user_info"] == "Charlie"
+        assert output["age_info"]["age"] == 16
+        assert output["age_info"]["category"] == "minor"
+        assert output["age_info"]["can_vote"] == False
+        assert output["age_info"]["description"] == "16 year old minor"
+        
+    @pytest.mark.asyncio
+    async def test_nested_operations_in_complex_schemas(self):
+        """Test deeply nested operations in complex object schemas."""
+        # Define the raw functions first
+        def calculate_tax_func(price: float) -> float:
+            return price * 0.1  # 10% tax
+
+        def format_currency_func(amount: float) -> str:
+            return f"${amount:.2f}"
+
+        def calculate_discount_func(data: Dict) -> float:
+            base_price = data.get("price", 0)
+            discount_rate = data.get("discount_rate", 0)
+            return base_price * (1 - discount_rate)
+        
+        # Create operations from the functions
+        calculate_tax = operation(calculate_tax_func)
+        format_currency = operation(format_currency_func)
+        calculate_discount = operation(calculate_discount_func)
+        
+        # Create an operation for the with_tax calculation
+        @operation
+        def calculate_total_with_tax(d: Dict) -> float:
+            return calculate_discount_func(d) + calculate_tax_func(d["price"])
+
+        # Complex nested schema with operations
+        schema = {
+            "product": {
+                "details": {
+                    "name": get("name"),
+                    "category": get("category", "uncategorized")
+                },
+                "pricing": {
+                    "base_price": get("price"),
+                    "discount": calculate_discount,
+                    "tax": get("price") >> calculate_tax,
+                    "formatted": {
+                        "original": get("price") >> format_currency,
+                        "discounted": calculate_discount >> format_currency,
+                        "with_tax": calculate_total_with_tax >> format_currency,
+                    }
+                },
+                "summary": lambda d: {
+                    "name": d["name"],
+                    "final_price": calculate_discount_func(d) + calculate_tax_func(d["price"]),
+                    "savings": d["price"] - calculate_discount_func(d)
+                }
+            }
+        }
+        
+        build_op = build(schema)
+        result = await build_op.execute({
+            "name": "Premium Widget",
+            "category": "electronics",
+            "price": 100.0,
+            "discount_rate": 0.2  # 20% discount
+        })
+        
+        assert result.is_ok()
+        output = result.default_value(None)
+        
+        # Verify nested structure
+        assert output["product"]["details"]["name"] == "Premium Widget"
+        assert output["product"]["details"]["category"] == "electronics"
+        assert output["product"]["pricing"]["base_price"] == 100.0
+        assert output["product"]["pricing"]["discount"] == 80.0  # 100 * (1 - 0.2)
+        assert output["product"]["pricing"]["tax"] == 10.0  # 100 * 0.1
+        assert output["product"]["pricing"]["formatted"]["original"] == "$100.00"
+        assert output["product"]["pricing"]["formatted"]["discounted"] == "$80.00"
+        assert output["product"]["pricing"]["formatted"]["with_tax"] == "$90.00"  # 80 + (100 * 0.1)
+        assert output["product"]["summary"]["final_price"] == 90.0  # 80 + 10
+        assert output["product"]["summary"]["savings"] == 20.0  # 100 - 80
+    
+    @pytest.mark.asyncio
+    async def test_operation_error_handling(self):
+        """Test error handling in operations within object operations."""
+        @operation
+        def failing_op(data: Dict) -> int:
+            raise ValueError("Intentional failure")
+        
+        @operation
+        def safe_op(data: Dict) -> int:
+            return data.get("value", 0)
+        
+        # Test build with mixed success/failure operations
+        schema = {
+            "safe": safe_op,
+            "failing": failing_op,
+            "after_fail": safe_op,
+            "nested": {
+                "safe": safe_op,
+                "failing": failing_op
+            }
+        }
+        
+        build_op = build(schema)
+        result = await build_op.execute({"value": 42})
+        assert result.is_ok()
+        output = result.default_value(None)
+        assert output["safe"] == 42
+        assert output["failing"] is None  # Failed operation returns None
+        assert output["after_fail"] == 42  # Subsequent operations still run
+        assert output["nested"]["safe"] == 42
+        assert output["nested"]["failing"] is None
+        
+        # Test merge with mixed operations
+        merge_op = merge(
+            {"safe": safe_op},
+            {"failing": failing_op},
+            {"after_fail": safe_op}
+        )
+        result = await merge_op.execute({"value": 42})
+        assert result.is_ok()
+        output = result.default_value(None)
+        assert output["safe"] == 42
+        assert output["failing"] is None
+        assert output["after_fail"] == 42
 
 
 if __name__ == "__main__":
