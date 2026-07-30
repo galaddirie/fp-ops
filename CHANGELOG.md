@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.0] - Unreleased
+
+### Changed
+
+- Replaced the graph, binding, placeholder, and implicit context runtime with a
+  typed immutable unary `Operation[A, B]`.
+- Replaced `.execute` and implicit awaiting with explicit `.run(value,
+  environment=...)`.
+- Added typed capability environments, explicit raw/`Result` constructors,
+  recovery, retry, tap, fanout, traversal, filtering, folding, path, build, and
+  assignment policies.
+- Added mypy and Pyright consumer contracts plus isolated wheel validation.
+
+### Removed
+
+- Removed graph/port/execution-plan internals, `BaseContext`, placeholder
+  binding, callable/awaitable operations, binary `&`, and all compatibility
+  behavior.
+
 ## [0.2.11] - 2025-06-09
 
 ### Added
@@ -223,5 +242,4 @@ Initial release of fp-ops
 
 
 ### Changed
-
 

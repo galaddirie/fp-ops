@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import pytest
+from expression import Error, Ok, Result
+
+from fp_ops import (
+    UNIT,
+    EnvKey,
+    Environment,
+    EnvironmentError,
+    Operation,
+    collect_named,
+    constant,
+    default_on_error,
+    environment_operation,
+    environment_result_operation,
+    fail,
+    fallback,
+    fanout_all_settled,
+    fanout_parallel,
+    operation,
+    or_else,
+    pipe_all,
+    recover,
+    recover_with,
+    result_operation,
+    retry,
+    tap,
+    tap_best_effort,
+)
+
+
+class Counter:
+    def __init__(self, amount: int) -> None:
+        self.amount = amount
+        self.seen: list[int] = []
+
+
+COUNTER = EnvKey("counter", Counter)
+
+
+@environment_operation(COUNTER)
+def add_counter(value: int, counter: Counter) -> int:
+    counter.seen.append(value)
+    return value + counter.amount
+
+
+@pytest.mark.asyncio
+async def test_environment_is_immutable_typed_and_reused_across_stages() -> None:
+    counter = Counter(2)
+    first = Environment()
+    configured = first.with_value(COUNTER, counter)
+
+    assert COUNTER not in first
+    assert configured.require(COUNTER) is counter
+    assert await add_counter.then(add_counter).run(1, environment=configured) == Ok(
+        5
+    )
+    assert counter.seen == [1, 3]
+    assert add_counter.required_environment == (COUNTER,)
+
+
+@pytest.mark.asyncio
+async def test_missing_environment_requirement_is_an_error_before_effects() -> None:
+    called = False
+
+    @operation
+    def before(value: int) -> int:
+        nonlocal called
+        called = True
+        return value
+
+    outcome = await before.then(add_counter).run(1)
+    assert outcome.is_error()
+    assert isinstance(outcome.error, EnvironmentError)
+    assert called is False
+
+
+def test_environment_rejects_wrong_capability_at_assembly() -> None:
+    with pytest.raises(EnvironmentError):
+        Environment().with_value(COUNTER, object())  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_environment_result_constructor_flattens_declared_result() -> None:
+    @environment_result_operation(COUNTER)
+    def checked(value: int, counter: Counter) -> Result[int, Exception]:
+        if value < 0:
+            return Error(ValueError("negative"))
+        return Ok(value + counter.amount)
+
+    environment = Environment().with_value(COUNTER, Counter(3))
+    assert await checked.run(2, environment=environment) == Ok(5)
+    assert (await checked.run(-1, environment=environment)).is_error()
+
+
+@pytest.mark.asyncio
+async def test_recovery_variants_and_alternatives_use_original_input() -> None:
+    error = ValueError("bad")
+    failed: Operation[int, int] = result_operation(lambda _value: Error(error))
+
+    assert await recover(failed, lambda exc: len(str(exc))).run(10) == Ok(3)
+    assert await recover_with(failed, lambda _exc: constant(8)).run(10) == Ok(8)
+    assert await default_on_error(failed, 7).run(10) == Ok(7)
+    assert await or_else(failed, operation(lambda value: value + 1)).run(10) == Ok(
+        11
+    )
+    assert await (failed | operation(lambda value: value + 2)).run(10) == Ok(12)
+    assert await fallback(failed, failed, constant(4)).run(10) == Ok(4)
+
+
+def test_invalid_fallback_and_retry_configuration_raise_synchronously() -> None:
+    with pytest.raises(ValueError):
+        fallback()
+    with pytest.raises(ValueError):
+        retry(constant(1), attempts=0)
+    with pytest.raises(ValueError):
+        retry(constant(1), attempts=1, backoff=-0.1)
+
+
+@pytest.mark.asyncio
+async def test_retry_attempt_count_and_async_backoff() -> None:
+    calls = 0
+    backoffs: list[tuple[int, str]] = []
+
+    @operation
+    def flaky(value: int) -> int:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise ValueError(f"failure {calls}")
+        return value
+
+    async def backoff(attempt: int, error: Exception) -> float:
+        backoffs.append((attempt, str(error)))
+        return 0
+
+    assert await retry(flaky, attempts=3, backoff=backoff).run(5) == Ok(5)
+    assert calls == 3
+    assert backoffs == [(1, "failure 1"), (2, "failure 2")]
+
+
+@pytest.mark.asyncio
+async def test_tap_propagates_and_best_effort_ignores_only_exception() -> None:
+    effect_error = RuntimeError("effect")
+
+    def broken(_value: int) -> None:
+        raise effect_error
+
+    propagated = await tap(constant(3), broken).run(UNIT)
+    ignored = await tap_best_effort(constant(3), broken).run(UNIT)
+    assert propagated == Error(effect_error)
+    assert ignored == Ok(3)
+
+
+@pytest.mark.asyncio
+async def test_pipe_all_snapshots_configuration() -> None:
+    operations = [operation(lambda value: value + 1)]
+    pipeline = pipe_all(operations)
+    operations.append(operation(lambda value: value * 100))
+    assert await pipeline.run(1) == Ok(2)
+    assert await pipe_all([]).run("same") == Ok("same")
+
+
+@pytest.mark.asyncio
+async def test_fanout_output_order_all_settled_and_named_shape() -> None:
+    async def delayed(value: int, delay: float) -> int:
+        await asyncio.sleep(delay)
+        return value
+
+    slow = operation(lambda value: delayed(value + 1, 0.02))
+    fast = operation(lambda value: delayed(value + 2, 0))
+    broken = fail(ValueError("branch"))
+
+    assert await fanout_parallel(slow, fast).run(1) == Ok((2, 3))
+    settled = await fanout_all_settled(slow, broken, fast).run(1)
+    assert settled.is_ok()
+    values = settled.ok
+    assert values[0] == Ok(2)
+    assert values[1].is_error()
+    assert values[2] == Ok(3)
+    assert await collect_named(first=slow, second=fast).run(1) == Ok(
+        {"first": 2, "second": 3}
+    )
+
+
+@pytest.mark.asyncio
+async def test_fail_fast_fanout_cancels_and_joins_sibling() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    @operation
+    async def sibling(_value: object) -> None:
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    @operation
+    async def broken(_value: object) -> object:
+        await started.wait()
+        raise ValueError("fanout")
+
+    outcome = await fanout_parallel(sibling, broken).run(UNIT)
+    assert outcome.is_error()
+    assert str(outcome.error) == "fanout"
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_fanout_limit_bounds_concurrency() -> None:
+    active = 0
+    maximum = 0
+
+    def branch() -> Operation[object, int]:
+        @operation
+        async def run_branch(_value: object) -> int:
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return maximum
+
+        return run_branch
+
+    outcome = await fanout_parallel(
+        branch(), branch(), branch(), branch(), limit=2
+    ).run(UNIT)
+    assert outcome.is_ok()
+    assert maximum == 2

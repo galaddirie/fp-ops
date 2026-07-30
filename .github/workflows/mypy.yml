@@ -2,24 +2,35 @@ name: Type Check
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
-  mypy:
+  consumer-contract:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.13"]
     steps:
-    - uses: actions/checkout@v3
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.13'
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install poetry
-        poetry install
-    - name: Run mypy
-      run: |
-        poetry run mypy -p fp_ops
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . mypy pyright build
+      - name: Check source and consumer fixtures
+        run: |
+          mypy -p fp_ops
+          mypy tests/typecheck/mypy/good.py
+          mypy examples/unary_pipeline.py
+          pyright --pythonpath "$(command -v python)"
+          pyright --pythonpath "$(command -v python)" examples/unary_pipeline.py
+          python tests/typecheck/check_bad_fixtures.py
+          python scripts/generate_api_reference.py --check
+          python examples/unary_pipeline.py
+      - name: Validate the built wheel in an isolated environment
+        run: python scripts/validate_wheel.py
