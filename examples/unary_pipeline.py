@@ -7,12 +7,14 @@ from dataclasses import dataclass
 from typing import TypedDict
 
 from fp_ops import (
-    EnvKey,
     Environment,
+    EnvKey,
     Ok,
+    _,
     build,
     environment_operation,
     operation,
+    operation_template,
     traverse,
 )
 
@@ -59,6 +61,14 @@ def price_item(item: Item, pricing: Pricing) -> PricedItem:
     }
 
 
+@operation_template
+def label_item(prefix: str, item: PricedItem) -> PricedItem:
+    return {
+        "name": f"{prefix}{item['name']}",
+        "total": item["total"],
+    }
+
+
 def read_name(item: PricedItem) -> str:
     return item["name"]
 
@@ -75,7 +85,9 @@ summarize_item = build(
     Summary,
 )
 
-pipeline = read_items.then(traverse(price_item.then(summarize_item)))
+pipeline = read_items >> traverse(
+    price_item >> label_item("Item: ", _) >> summarize_item
+)
 
 
 async def main() -> None:
@@ -84,7 +96,7 @@ async def main() -> None:
         {"items": [{"name": "Book", "price": 10.0}]},
         environment=environment,
     )
-    assert result == Ok([Summary(name="Book", total=11.3)])
+    assert result == Ok([Summary(name="Item: Book", total=11.3)])
     print(result)
 
 

@@ -228,29 +228,52 @@ Fail-fast parallel nodes cancel unfinished siblings when the first observed erro
 
 ## Binding
 
-`Operation.__call__`, `Operation.__await__`, placeholder rendering, and representation-dependent deferred arguments are not part of the new core. `.run` always consumes exactly one value.
+`Operation.__call__`, `Operation.__await__`, runtime placeholder rendering, and
+representation-dependent deferred arguments are not part of the new core.
+`.run` always consumes exactly one value.
 
 Multi-argument callables live at an adapter seam, outside composition:
 
 - `Args[P]` can lift a genuinely multi-input source into one typed record;
 - `UNIT` represents a nullary source;
+- construction-only operation templates use one direct `_` to select the unary
+  input while snapshotting every other argument;
 - ordinary Python factory functions capture configuration and return a unary `Operation`;
 - `functools.partial` remains available inside a factory when its honest Python typing is sufficient.
 
 For example:
 
 ```python
-def get_attribute(selector: str, *, attribute: str) -> Operation[Element, str]:
-    async def read(element: Element, session: BrowserSession) -> str:
-        ...
-    return environment_result_operation(BROWSER_SESSION)(read)
+@environment_result_operation_template(BROWSER_SESSION)
+async def get_attribute(
+    selector: str,
+    element: Element,
+    attribute: str,
+    session: BrowserSession,
+) -> Result[str, Exception]:
+    ...
+
+read_href = get_attribute("a", _, "href")
 ```
 
-This makes `selector` and `attribute` construction-time configuration and `element` pipeline data. Duplicate, missing, and excess configuration arguments are rejected by the factory's normal Python signature.
+This makes `selector` and `attribute` construction-time configuration and
+`element` pipeline data. Duplicate, missing, and excess configuration arguments
+are rejected against the original Python signature.
 
-The placeholder DSL is deleted with the current implementation. Ordinary
-factories replace every first-party use. There is no attempt to preserve or
-emulate partially applying an arbitrary `ParamSpec`.
+This is not the old placeholder engine: a template call must contain exactly one
+direct placeholder among at most six positional parameters and immediately
+returns a unary `Operation`. Nested placeholders, multiple holes, execution-time
+argument appending, and arbitrary `ParamSpec` subtraction are not supported.
+The runtime construction check remains authoritative when `Any` weakens static
+checking. Variadic configuration is supported when the hole is a fixed
+positional parameter, with limited checker support for forwarding configured
+variadic arguments. Keyword holes work at runtime but are intentionally outside
+the mypy/Pyright overload surface.
+
+`threaded_operation_template` shares the same construction typing and moves the
+configured blocking callable to `asyncio.to_thread`. Environment templates
+identify the injected capability as the final positional parameter, allowing
+typed keyword-only configuration after it.
 
 ## Collection and object operations
 
@@ -269,6 +292,11 @@ The collection module separates pure/async callbacks from nested operations:
 
 List order and dictionary insertion order are preserved. Concurrent traversal returns results in input order. Empty inputs do not invoke the callback.
 
+`CollectionOperation` carries the input/output shape through `.run` and
+composition, so iterable inputs produce lists, mapping inputs retain keys, and
+a list-producing traversal can feed a list-consuming operation template without
+exposing a list-or-dict output union.
+
 The object module provides:
 
 - `get_path(path, default=MISSING)`, which distinguishes missing from `None`;
@@ -279,6 +307,10 @@ The object module provides:
 
 `build` evaluates fields in schema insertion order. A separate `build_parallel` may be added only with a concurrency limit and documented capability-safety requirements. Schema mappings are snapshotted at construction.
 
+For operation- and callable-only schemas, `build` infers one shared input type
+across fields. Typed constants use `constant(value)`; explicitly dynamic
+`Mapping[str, Any]` schemas opt out of that inference.
+
 ## Internal modules and seams
 
 The target package layout is:
@@ -286,6 +318,7 @@ The target package layout is:
 ```text
 fp_ops/
   core.py             Operation, Unit, public constructors
+  templates.py        construction-only typed placeholder adapters
   environment.py      EnvKey and immutable Environment
   result.py           public error wrappers and Result helpers
   composition.py      pipe, recovery, retry, fanout
@@ -304,11 +337,13 @@ fp_ops/
 
 `Environment` is a concrete immutable module. `MappingEnvironment`, `SilkEnvironment`, and similar wrapper names should not exist unless they actually provide different adapters at a real seam.
 
-The current `graph.py`, edge/port types, renderer compilation, placeholder
-implementation, and executor plan are deleted in Phase 1 as soon as the unary
-core can execute and compose. Keeping them until the replacement surface is
-complete would reduce locality and fail the deletion test. Git history is the
-archive; the package does not carry a second implementation.
+The current `graph.py`, edge/port types, renderer compilation, runtime
+placeholder implementation, and executor plan are deleted in Phase 1 as soon as
+the unary core can execute and compose. The construction-only template adapter
+does not reuse that implementation. Keeping the legacy machinery until the
+replacement surface is complete would reduce locality and fail the deletion
+test. Git history is the archive; the package does not carry a second
+implementation.
 
 ## mypy and Pylance typing design
 
@@ -372,11 +407,13 @@ This is an aggressive replacement, not a compatibility program.
 The new implementation replaces the existing top-level `fp_ops` exports in one
 cutover. There is no intermediate `fp_ops.pipeline` namespace, `fp_ops.legacy`
 package, compatibility adapter, dual runner, forwarding method, or warning
-schedule. `.execute`, callable/awaitable `Operation`, partial binding,
-placeholders, `bind`, `apply_cont`, old `sequence`, and binary `&` are deleted
-in Phase 1 when the new core becomes the package default. The refactor branch
-may temporarily lack higher-level helpers while they are rebuilt; it must never
-contain two `Operation` implementations.
+schedule. `.execute`, callable/awaitable `Operation`, runtime partial binding,
+the legacy placeholder renderer, `bind`, `apply_cont`, old `sequence`, and
+binary `&` are deleted in Phase 1 when the new core becomes the package default.
+Construction-only templates may create unary operations but never change
+execution semantics. The refactor branch may temporarily lack higher-level
+helpers while they are rebuilt; it must never contain two `Operation`
+implementations.
 
 Old tests are not retained merely to keep obsolete behavior alive. Tests that
 describe target-independent facts are rewritten through the new interface;
@@ -394,7 +431,7 @@ breaking-change migration guide, not in runtime adapters:
 |----|----|
 | `.execute(value)` | `.run(value)` |
 | `await bound_operation` | `.run(UNIT)` on an explicitly nullary operation |
-| `operation(args...)` binding | ordinary typed factory |
+| `operation(args...)` binding | construction-only template or ordinary typed factory |
 | `a & b` | `fanout_parallel(a, b)` |
 | `.bind(fn)` | `.flat_map(fn)` with `Operation[Unit, C]` |
 | `.apply_cont(fn)` | explicit `.map`, `.flat_map`, or recovery |
@@ -425,15 +462,15 @@ contract scheduled for deletion.
 sequential AST, `.then`, `.run`, raw-value and returned-`Result` constructors,
 one invocation normalizer and exception boundary, generic
 `identity`/`constant`, configuration snapshots, and metadata. In the same phase,
-delete the old `Operation`, graph, executor, templates, placeholders, binding
-methods, compatibility-only exports, and tests whose contracts have been
-rejected.
+delete the old `Operation`, graph, executor, runtime templates/placeholder
+renderer, binding methods, compatibility-only exports, and tests whose contracts
+have been rejected.
 
 **Acceptance:** Identity, associativity, `None`, exception closure, and
 sync/async tests pass through the public interface; incompatible `.then` calls
 fail both type checkers. The worktree contains one `Operation` implementation
-and no graph, edge, port, renderer, execution plan, placeholder engine, legacy
-namespace, or old runner.
+and no graph, edge, port, renderer, execution plan, runtime placeholder engine,
+legacy namespace, or old runner.
 
 ### Phase 2 — Add environment and higher-order behavior
 
@@ -499,7 +536,7 @@ change is required to make Silk pass.
 | All-settled | every branch represented by `Result` | No Validation claim |
 | Traversal | input order preserved | Concurrent completion may differ |
 | Build | field and original cause retained | Fail-fast insertion order |
-| Binding | factories reject invalid configuration normally | No graph-size dependency |
+| Binding | templates/factories reject invalid configuration normally | No graph-size dependency |
 | Immutability | caller config mutation cannot change an operation | Captured domain values documented |
 | Typing | good fixtures reveal exact types; bad fixtures fail | mypy and Pyright/Pylance |
 
@@ -508,8 +545,9 @@ Property tests use pure total functions for identity and associativity. Example 
 ## Risks and mitigations
 
 - **Migration size:** Silk relies on argument binding and implicit context.
-  Rewrite it after the FP-Ops cutover on one migration branch; do not reduce
-  short-term diff size by carrying two FP-Ops interfaces.
+  Replace one-hole configuration with construction-only templates and rewrite
+  hidden context state after the FP-Ops cutover; do not reduce short-term diff
+  size by carrying two execution interfaces.
 - **Environment type erasure:** `Operation[A, B]` cannot statically prove all keys are installed. Mitigate with typed key access, AST requirements, and `.run` preflight validation.
 - **Parallel cancellation races:** an external effect may complete after another branch fails. Document best-effort cancellation and test cooperative tasks.
 - **Mutable capabilities:** a read-only mapping can still contain unsafe shared objects. Require capability-level concurrency tests; do not claim isolation.

@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from expression import Ok, Result
 
-from fp_ops import EnvKey, Environment, Operation, operation, result_operation
-
+from fp_ops import (
+    Environment,
+    EnvKey,
+    Operation,
+    _,
+    build,
+    operation,
+    operation_template,
+    result_operation,
+)
 
 to_text: Operation[int, str] = operation(lambda value: str(value))
 needs_bytes: Operation[bytes, float] = operation(lambda value: float(value))
@@ -13,6 +21,7 @@ invalid_pipeline = to_text.then(needs_bytes)
 
 # missing unary run input
 missing_input = to_text.run()
+
 
 def raw_result(value: int) -> Result[int, Exception]:
     return Ok(value)
@@ -39,3 +48,27 @@ CAPABILITY = EnvKey("capability", Capability)
 
 # typed environment keys reject incompatible capability values
 wrong_environment = Environment().with_value(CAPABILITY, "wrong")
+
+
+@operation_template
+def configured(prefix: str, value: int) -> str:
+    return f"{prefix}{value}"
+
+
+# templates require exactly one correctly positioned placeholder
+no_placeholder = configured("value=", 1)
+two_placeholders = configured(_, _)
+wrong_configuration = configured(1, _)
+
+
+class MixedBuild:
+    def __init__(self, text: str, number: float) -> None:
+        self.text = text
+        self.number = number
+
+
+# build fields must consume one shared input type
+invalid_build = build(
+    {"text": to_text, "number": needs_bytes},
+    MixedBuild,
+)

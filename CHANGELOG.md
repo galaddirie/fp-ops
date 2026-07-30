@@ -11,6 +11,13 @@
 - Added typed capability environments, explicit raw/`Result` constructors,
   recovery, retry, tap, fanout, traversal, filtering, folding, path, build, and
   assignment policies.
+- Added construction-only operation templates: one direct positional `_` can
+  select the unary pipeline input without making `Operation` callable or adding
+  placeholder behavior to the runner.
+- Added `threaded_operation_template`, keyword-only environment-template
+  configuration, and variadic template configuration.
+- Preserved collection input/output shape through `CollectionOperation` and
+  shared schema input types through `build`.
 - Added mypy and Pyright consumer contracts plus isolated wheel validation.
 
 ### Removed
@@ -242,4 +249,3 @@ Initial release of fp-ops
 
 
 ### Changed
-

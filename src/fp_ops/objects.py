@@ -1,4 +1,5 @@
 """Object paths, fail-fast/all-settled builds, and shallow assignment."""
+
 # pyright: reportPrivateUsage=false, reportUnnecessaryIsInstance=false
 # pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false
 
@@ -47,9 +48,11 @@ def _path_parts(path: str | Sequence[str | int]) -> tuple[str | int, ...]:
         if not path:
             return ()
         return tuple(
-            int(match.group(1))
-            if match.group(1) is not None
-            else cast(str, match.group(2))
+            (
+                int(match.group(1))
+                if match.group(1) is not None
+                else cast(str, match.group(2))
+            )
             for match in re.finditer(r"\[(\d+)\]|([^.\[\]]+)", path)
         )
     return tuple(path)
@@ -144,14 +147,22 @@ def _snapshot_fields(
 
 
 @overload
-def build(schema: Mapping[str, Any]) -> Operation[Any, dict[str, Any]]: ...
+def build(
+    schema: Mapping[
+        str,
+        Operation[A, Any] | Callable[[A], Any],
+    ],
+) -> Operation[A, dict[str, Any]]: ...
 
 
 @overload
 def build(
-    schema: Mapping[str, Any],
+    schema: Mapping[
+        str,
+        Operation[A, Any] | Callable[[A], Any],
+    ],
     model: type[T],
-) -> Operation[Any, T]: ...
+) -> Operation[A, T]: ...
 
 
 def build(

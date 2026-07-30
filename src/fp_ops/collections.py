@@ -1,11 +1,14 @@
 """Collection operations with explicit callback, effect, and error policies."""
+
+# mypy: disable-error-code="overload-overlap, override"
+# pyright: reportIncompatibleMethodOverride=false, reportOverlappingOverload=false
 # pyright: reportPrivateUsage=false, reportUnnecessaryIsInstance=false
 
 from __future__ import annotations
 
 import copy
 from collections.abc import Iterable, Mapping
-from typing import Any, Awaitable, Callable, Hashable, Literal, TypeVar, cast
+from typing import Any, Awaitable, Callable, Hashable, Literal, TypeVar, cast, overload
 
 from expression import Result
 
@@ -19,37 +22,91 @@ from fp_ops._ast import (
     TraverseNode,
 )
 from fp_ops.core import Operation, _merge_requirements
+from fp_ops.environment import EMPTY_ENV, Environment
 
 T = TypeVar("T")
 U = TypeVar("U")
 A = TypeVar("A")
+K = TypeVar("K", bound=Hashable)
+C = TypeVar("C")
+
+
+class CollectionOperation(Operation[Iterable[T], list[U]]):
+    """An operation whose output retains whether its input is a mapping.
+
+    The base ``Operation`` view represents the common iterable-to-list case.
+    Overloads on execution and composition retain mapping keys when a mapping
+    is used instead.
+    """
+
+    @overload
+    async def run(
+        self,
+        value: Mapping[K, T],
+        *,
+        environment: Environment = EMPTY_ENV,
+    ) -> Result[dict[K, U], Exception]: ...
+
+    @overload
+    async def run(
+        self,
+        value: Iterable[T],
+        *,
+        environment: Environment = EMPTY_ENV,
+    ) -> Result[list[U], Exception]: ...
+
+    async def run(
+        self,
+        value: object,
+        *,
+        environment: Environment = EMPTY_ENV,
+    ) -> Result[Any, Exception]:
+        return await super().run(cast(Iterable[T], value), environment=environment)
+
+    @overload
+    def then(self, next: Operation[list[U], C]) -> Operation[Iterable[T], C]: ...
+
+    @overload
+    def then(
+        self,
+        next: Operation[dict[K, U], C],
+    ) -> Operation[Mapping[K, T], C]: ...
+
+    def then(self, next: Operation[Any, C]) -> Operation[Any, C]:
+        return super().then(next)
+
+    @overload
+    def __rshift__(
+        self,
+        next: Operation[list[U], C],
+    ) -> Operation[Iterable[T], C]: ...
+
+    @overload
+    def __rshift__(
+        self,
+        next: Operation[dict[K, U], C],
+    ) -> Operation[Mapping[K, T], C]: ...
+
+    def __rshift__(self, next: Operation[Any, C]) -> Operation[Any, C]:
+        return self.then(next)
 
 
 def map_each(
     fn: Callable[[T], U | Awaitable[U]],
-) -> Operation[
-    Iterable[T] | Mapping[Hashable, T],
-    list[U] | dict[Hashable, U],
-]:
+) -> CollectionOperation[T, U]:
     """Map a raw-value callback in input order and fail on its first error."""
 
     if not callable(fn):
         raise TypeError("map_each() requires a callable")
     return cast(
-        Operation[
-            Iterable[T] | Mapping[Hashable, T],
-            list[U] | dict[Hashable, U],
-        ],
-        Operation._from_node(MapEachNode(fn), name="map_each"),
+        CollectionOperation[T, U],
+        CollectionOperation._from_node(MapEachNode(fn), name="map_each"),
     )
 
 
 def traverse(
     op: Operation[T, U],
-) -> Operation[
-    Iterable[T] | Mapping[Hashable, T],
-    list[U] | dict[Hashable, U],
-]:
+) -> CollectionOperation[T, U]:
     """Run an operation sequentially in input order and fail fast."""
 
     return _traverse(op, mode="fail_fast", limit=None, on_error=None)
@@ -59,10 +116,7 @@ def traverse_parallel(
     op: Operation[T, U],
     *,
     limit: int,
-) -> Operation[
-    Iterable[T] | Mapping[Hashable, T],
-    list[U] | dict[Hashable, U],
-]:
+) -> CollectionOperation[T, U]:
     """Run a bounded concurrent traversal and fail fast."""
 
     return _traverse(op, mode="fail_fast", limit=limit, on_error=None)
@@ -72,10 +126,7 @@ def traverse_all_settled(
     op: Operation[T, U],
     *,
     limit: int,
-) -> Operation[
-    Iterable[T] | Mapping[Hashable, T],
-    list[Result[U, Exception]] | dict[Hashable, Result[U, Exception]],
-]:
+) -> CollectionOperation[T, Result[U, Exception]]:
     """Run every item and retain its ``Result`` in input order."""
 
     return _traverse(op, mode="all_settled", limit=limit, on_error=None)
@@ -86,10 +137,7 @@ def traverse_lossy(
     *,
     limit: int,
     on_error: Callable[[T, Exception], object | Awaitable[object]] | None = None,
-) -> Operation[
-    Iterable[T] | Mapping[Hashable, T],
-    list[U] | dict[Hashable, U],
-]:
+) -> CollectionOperation[T, U]:
     """Run every item and retain only successes, optionally reporting errors."""
 
     if on_error is not None and not callable(on_error):
@@ -103,14 +151,14 @@ def _traverse(
     mode: Literal["fail_fast", "all_settled", "lossy"],
     limit: int | None,
     on_error: Callable[[T, Exception], object | Awaitable[object]] | None,
-) -> Operation[Any, Any]:
+) -> CollectionOperation[Any, Any]:
     if not isinstance(op, Operation):
         raise TypeError("traversal requires an Operation")
     if limit is not None and (isinstance(limit, bool) or limit < 1):
         raise ValueError("limit must be at least 1")
     return cast(
-        Operation[Iterable[T] | Mapping[Hashable, T], object],
-        Operation._from_node(
+        CollectionOperation[Any, Any],
+        CollectionOperation._from_node(
             TraverseNode(
                 op._node,
                 mode=mode,
@@ -238,9 +286,7 @@ def fanout_each(
     snapshot = tuple(operations)
     if any(not isinstance(item, Operation) for item in snapshot):
         raise TypeError("fanout_each() accepts only Operation instances")
-    requirements = _merge_requirements(
-        *(item._requirements for item in snapshot)
-    )
+    requirements = _merge_requirements(*(item._requirements for item in snapshot))
     fanout = FanoutNode(
         tuple((None, item._node) for item in snapshot),
         mode="fail_fast",
@@ -258,6 +304,7 @@ def fanout_each(
 
 
 __all__ = [
+    "CollectionOperation",
     "fanout_each",
     "filter_best_effort",
     "filter_each",

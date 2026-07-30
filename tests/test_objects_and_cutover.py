@@ -115,9 +115,7 @@ async def test_shallow_merge_and_assign_fail_fast() -> None:
     dynamic = operation(lambda data: {"value": data["value"]})
     expected = {"static": 1, "value": 2}
 
-    assert await merge_shallow({"static": 1}, dynamic).run({"value": 2}) == Ok(
-        expected
-    )
+    assert await merge_shallow({"static": 1}, dynamic).run({"value": 2}) == Ok(expected)
     assert await assign({"static": 1}, dynamic).run({"value": 2}) == Ok(expected)
     invalid = await merge_shallow(lambda _data: None).run({})  # type: ignore[arg-type]
     assert invalid.is_error()
@@ -143,9 +141,10 @@ def test_hard_cutover_exports_only_the_new_interface() -> None:
     assert not hasattr(fp_ops.Operation, "apply_cont")
     assert not hasattr(fp_ops.Operation, "__and__")
     assert "BaseContext" not in fp_ops.__all__
-    assert "Placeholder" not in fp_ops.__all__
+    assert "Placeholder" in fp_ops.__all__
 
     required = {
+        "CollectionOperation",
         "EMPTY_ENV",
         "EnvKey",
         "Environment",
@@ -161,7 +160,9 @@ def test_hard_cutover_exports_only_the_new_interface() -> None:
         "constant",
         "default_on_error",
         "environment_operation",
+        "environment_operation_template",
         "environment_result_operation",
+        "environment_result_operation_template",
         "fail",
         "fallback",
         "fanout_all_settled",
@@ -177,15 +178,18 @@ def test_hard_cutover_exports_only_the_new_interface() -> None:
         "map_each",
         "merge_shallow",
         "operation",
+        "operation_template",
         "or_else",
         "pipe_all",
         "recover",
         "recover_with",
         "result_operation",
+        "result_operation_template",
         "retry",
         "tap",
         "tap_best_effort",
         "threaded_operation",
+        "threaded_operation_template",
         "traverse",
         "traverse_all_settled",
         "traverse_lossy",

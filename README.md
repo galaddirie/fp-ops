@@ -38,7 +38,7 @@ async def double(value: int) -> int:
     return value * 2
 
 
-pipeline = parse.then(double)  # `parse >> double` is the syntax alias
+pipeline = parse >> double
 
 
 async def main() -> None:
@@ -48,13 +48,61 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`.then` accepts only an `Operation`, making the stage relationship visible to
-mypy and Pyright. Use `.map(callback)` for a raw successful-value transform.
-Use `.flat_map(callback)` only when the callback returns an
-`Operation[Unit, T]` that should execute with `UNIT`.
+`>>` is the syntax alias for `.then`; both accept only an `Operation`, making
+the stage relationship visible to mypy and Pyright. Use `.map(callback)` for a
+raw successful-value transform. Use `.flat_map(callback)` only when the callback
+returns an `Operation[Unit, T]` that should execute with `UNIT`.
 
-There is no callable or awaitable `Operation`, argument binding, placeholder
-DSL, graph interface, or `.execute` alias.
+There is no callable or awaitable `Operation`, runtime argument binding, graph
+interface, or `.execute` alias.
+
+## Configured stages and placeholders
+
+An operation template keeps configuration in ordinary function parameters while
+allowing the unary pipeline value to occupy any one direct positional slot:
+
+```python
+from fp_ops import Operation, _, operation_template
+
+
+@operation_template
+def format_value(
+    prefix: str,
+    value: int,
+    suffix: str,
+    *,
+    scale: float = 1.0,
+) -> str:
+    return f"{prefix}{value * scale:g}{suffix}"
+
+
+formatted: Operation[int, str] = format_value("$", _, "!", scale=2.0)
+pipeline = parse >> formatted
+```
+
+Calling a template requires exactly one `_` and immediately returns a normal,
+immutable unary `Operation`; placeholders never enter composition or execution.
+Configured arguments are validated against the original Python signature and
+snapshotted at construction.
+
+Templates support one direct placeholder among the first six positional
+parameters. Trailing keyword-only configuration remains type-checked. Nested
+and multiple placeholders are rejected at construction. This one-hole rule is
+a construction-time guarantee rather than a complete type-level proof:
+parameters annotated as `Any` can hide invalid calls from a checker, but the
+runtime still rejects them. Variadic configuration is accepted when the direct
+placeholder occupies a fixed positional parameter, although checker support for
+forwarded variadic arguments is limited.
+
+Prefer keyword-only parameters for optional configuration; this preserves their
+defaults and names in the template type. A keyword argument may contain the
+placeholder at runtime, but mypy and Pyright deliberately support holes only in
+the fixed positional parameters. Use `result_operation_template` for a callable
+declaring `Result`, `threaded_operation_template` for blocking work, and
+`environment_operation_template(key)` or
+`environment_result_operation_template(key)` when the callable's final
+positional parameter is an injected capability. Keyword-only configuration may
+follow that capability.
 
 ## Raw values and declared results
 
@@ -74,7 +122,8 @@ flattened = result_operation(lambda _: Ok(3))
 
 Synchronous functions, async functions, and synchronous functions that return
 awaitables share one normalizer. Synchronous work runs inline. Use
-`threaded_operation` to opt blocking work into `asyncio.to_thread`.
+`threaded_operation` or `threaded_operation_template` to opt blocking work into
+`asyncio.to_thread`.
 
 After `.run` starts, ordinary `Exception` values become `Error(exception)`.
 `asyncio.CancelledError`, `KeyboardInterrupt`, `SystemExit`, and other
@@ -85,7 +134,12 @@ After `.run` starts, ordinary `Exception` values become `Error(exception)`.
 ```python
 from dataclasses import dataclass
 
-from fp_ops import EnvKey, Environment, environment_operation
+from fp_ops import (
+    _,
+    EnvKey,
+    Environment,
+    environment_operation_template,
+)
 
 
 @dataclass
@@ -96,13 +150,20 @@ class Rates:
 RATES = EnvKey("rates", Rates)
 
 
-@environment_operation(RATES)
-def add_tax(subtotal: float, rates: Rates) -> float:
-    return subtotal * (1 + rates.tax)
+@environment_operation_template(RATES)
+def add_tax(
+    currency: str,
+    subtotal: float,
+    rates: Rates,
+    *,
+    precision: int = 2,
+) -> str:
+    return f"{currency}{subtotal * (1 + rates.tax):.{precision}f}"
 
 
 environment = Environment().with_value(RATES, Rates(tax=0.13))
-# result = await add_tax.run(10.0, environment=environment)
+taxed = add_tax("$", _, precision=2)
+# result = await taxed.run(10.0, environment=environment)
 ```
 
 Keys use object identity, not their names. `with_value` returns a new
@@ -166,7 +227,10 @@ total = fold(lambda acc, value: acc + value, 0)
 
 List order and mapping insertion order are preserved. A fail-fast item error is
 reported as `TraversalItemError(index, cause)`. Empty inputs do not invoke the
-callback.
+callback. `map_each` and the traversal helpers return `CollectionOperation`,
+which remains a unary `Operation` while retaining list-versus-mapping output
+types during execution and composition. This keeps collection stages directly
+composable with typed templates.
 
 ## Paths, builds, and assignment
 
@@ -193,9 +257,12 @@ to_user = build(
 
 `get_path` distinguishes an absent path from a present `None`. `build`
 evaluates schema fields in insertion order and fails with
-`BuildFieldError(field, cause)`. `merge_shallow`/`assign` merge same-input
-mapping sources; `assign_fields` copies an input mapping and applies shallow
-field assignments.
+`BuildFieldError(field, cause)`. For operation- and callable-only schemas,
+`build` infers and enforces one shared input type across all fields. Represent a
+typed constant field with `constant(value)`; explicitly annotate a schema as
+`Mapping[str, Any]` only when dynamic constants are intentional.
+`merge_shallow`/`assign` merge same-input mapping sources; `assign_fields`
+copies an input mapping and applies shallow field assignments.
 
 Mappings and sequences used as combinator configuration are snapshotted.
 Captured domain objects and environment capabilities are not transitively

@@ -20,7 +20,7 @@ Returning an `Operation` from `.map` leaves it as ordinary data.
 |---|---|
 | `.execute(value)` | `.run(value)` |
 | `await bound_operation` | `.run(UNIT)` |
-| calling an operation to bind arguments | an ordinary Python factory |
+| calling an operation to bind arguments | an operation template or Python factory |
 | `a & b` | `fanout_parallel(a, b)` |
 | `.bind(callback)` | `.flat_map(callback)` |
 | `.apply_cont(callback)` | `.map`, `.flat_map`, or recovery |
@@ -30,7 +30,38 @@ Returning an `Operation` from `.map` leaves it as ordinary data.
 | `sequences.zip` | `fanout_each` |
 
 `>>` remains a thin alias for `.then`. `|` remains a thin alias for
-`or_else`. Binary `&`, placeholders, graph ports, and partial binding are gone.
+`or_else`. Binary `&`, graph ports, runtime partial binding, and the old
+placeholder renderer are gone.
+
+Construction-only templates retain the useful one-hole syntax without making
+`Operation` callable:
+
+```python
+from fp_ops import _, operation_template
+
+
+@operation_template
+def add(left: int, right: int) -> int:
+    return left + right
+
+
+add_ten = add(_, 10)  # Operation[int, int]
+pipeline = double >> add_ten
+```
+
+A template call must contain exactly one direct placeholder among its first six
+positional arguments. The call immediately returns a unary `Operation`;
+configuration is never appended at execution time. Nested placeholders and
+multiple independent holes should be rewritten as an explicit input record or
+ordinary factory. This is enforced at construction even when an `Any`
+annotation prevents a type checker from proving the one-hole rule. Variadic
+configuration is accepted, while keyword-argument holes remain a runtime-only
+feature because mypy and Pyright model fixed positional holes. Checker support
+for forwarding configured variadic arguments is limited.
+
+Use `threaded_operation_template` when the configured callable is blocking.
+For environment templates, place the injected capability in the final
+positional parameter; keyword-only configuration may follow it.
 
 ## Errors
 
@@ -58,12 +89,21 @@ with typed capability keys:
 ```python
 SESSION = EnvKey("session", BrowserSession)
 
-@environment_operation(SESSION)
-async def read(element: Element, session: BrowserSession) -> str:
+@environment_operation_template(SESSION)
+async def read(
+    selector: str,
+    element: Element,
+    session: BrowserSession,
+    *,
+    timeout: float = 5.0,
+) -> str:
     ...
 
 environment = Environment().with_value(SESSION, session)
-result = await read.run(element, environment=environment)
+result = await read(".title", _, timeout=2.0).run(
+    element,
+    environment=environment,
+)
 ```
 
 The environment is read-only and never replaced by a successful stage value.

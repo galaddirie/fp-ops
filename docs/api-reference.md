@@ -12,6 +12,10 @@ BuildFieldError(field: 'str', cause: 'Exception') -> 'None'
 
 A schema field failed while being built.
 
+## `CollectionOperation`
+
+A unary `Operation` returned by collection combinators. Its overloads preserve iterable-to-list and mapping-to-dictionary shapes through execution and composition.
+
 ## `EMPTY_ENV`
 
 `from fp_ops import EMPTY_ENV`
@@ -58,7 +62,7 @@ Ok(value: '_TSource') -> 'Result[_TSource, Any]'
 
 ## `Operation`
 
-Construct with `operation`, `result_operation`, an environment constructor, or another FP-Ops combinator.
+Construct with a unary constructor, a configured operation template, or another FP-Ops combinator.
 
 ```python
 run(self, value: 'A_contra', *, environment: 'Environment' = Environment()) -> 'Result[B_co, Exception]'
@@ -83,6 +87,14 @@ PathNotFoundError(path: 'str') -> 'None'
 ```
 
 A requested object path does not exist and no default was supplied.
+
+## `Placeholder`
+
+```python
+Placeholder()
+```
+
+The construction-time hole filled by an operation's unary input.
 
 ## `Result`
 
@@ -113,6 +125,12 @@ Unit(*values)
 ```
 
 The single input value for deliberately nullary sources.
+
+## `_`
+
+`from fp_ops import _`
+
+The construction-time hole filled by an operation's unary input.
 
 ## `__version__`
 
@@ -190,6 +208,14 @@ environment_operation(key: 'EnvKey[T]') -> 'EnvironmentOperationDecorator[T]'
 
 Bind one capability type, then decorate a raw-value callable.
 
+## `environment_operation_template`
+
+```python
+environment_operation_template(key: 'EnvKey[T]') -> 'EnvironmentOperationTemplateDecorator[T]'
+```
+
+Bind a capability and decorate a raw-value operation template.
+
 ## `environment_result_operation`
 
 ```python
@@ -197,6 +223,14 @@ environment_result_operation(key: 'EnvKey[T]') -> 'EnvironmentResultOperationDec
 ```
 
 Bind one capability type, then decorate a ``Result`` callable.
+
+## `environment_result_operation_template`
+
+```python
+environment_result_operation_template(key: 'EnvKey[T]') -> 'EnvironmentResultOperationTemplateDecorator[T]'
+```
+
+Bind a capability and decorate a Result-returning operation template.
 
 ## `fail`
 
@@ -297,7 +331,7 @@ Return the unary identity operation.
 ## `map_each`
 
 ```python
-map_each(fn: 'Callable[[T], U | Awaitable[U]]') -> 'Operation[Iterable[T] | Mapping[Hashable, T], list[U] | dict[Hashable, U]]'
+map_each(fn: 'Callable[[T], U | Awaitable[U]]') -> 'CollectionOperation[T, U]'
 ```
 
 Map a raw-value callback in input order and fail on its first error.
@@ -325,6 +359,17 @@ operation(fn: 'Callable[[A], object]') -> 'Operation[A, Any]'
 ```
 
 Lift a unary raw-value callable into an operation.
+
+## `operation_template`
+
+```python
+@operation_template
+def configured(...): ...
+
+stage: Operation[A, B] = configured(..., _, ...)
+```
+
+The decorator preserves positional argument types through overloaded operation-template protocols.
 
 ## `or_else`
 
@@ -366,6 +411,17 @@ result_operation(fn: 'Callable[[A], object]') -> 'Operation[A, Any]'
 
 Lift a unary callable whose declared output is exactly one ``Result``.
 
+## `result_operation_template`
+
+```python
+@result_operation_template
+def configured(...): ...
+
+stage: Operation[A, B] = configured(..., _, ...)
+```
+
+The decorator preserves positional argument types through overloaded operation-template protocols.
+
 ## `retry`
 
 ```python
@@ -398,10 +454,21 @@ threaded_operation(fn: 'Callable[[A], object]') -> 'Operation[A, Any]'
 
 Lift a callable whose initial invocation must run in a worker thread.
 
+## `threaded_operation_template`
+
+```python
+@threaded_operation_template
+def configured(...): ...
+
+stage: Operation[A, B] = configured(..., _, ...)
+```
+
+The decorator preserves positional argument types through overloaded operation-template protocols.
+
 ## `traverse`
 
 ```python
-traverse(op: 'Operation[T, U]') -> 'Operation[Iterable[T] | Mapping[Hashable, T], list[U] | dict[Hashable, U]]'
+traverse(op: 'Operation[T, U]') -> 'CollectionOperation[T, U]'
 ```
 
 Run an operation sequentially in input order and fail fast.
@@ -409,7 +476,7 @@ Run an operation sequentially in input order and fail fast.
 ## `traverse_all_settled`
 
 ```python
-traverse_all_settled(op: 'Operation[T, U]', *, limit: 'int') -> 'Operation[Iterable[T] | Mapping[Hashable, T], list[Result[U, Exception]] | dict[Hashable, Result[U, Exception]]]'
+traverse_all_settled(op: 'Operation[T, U]', *, limit: 'int') -> 'CollectionOperation[T, Result[U, Exception]]'
 ```
 
 Run every item and retain its ``Result`` in input order.
@@ -417,7 +484,7 @@ Run every item and retain its ``Result`` in input order.
 ## `traverse_lossy`
 
 ```python
-traverse_lossy(op: 'Operation[T, U]', *, limit: 'int', on_error: 'Callable[[T, Exception], object | Awaitable[object]] | None' = None) -> 'Operation[Iterable[T] | Mapping[Hashable, T], list[U] | dict[Hashable, U]]'
+traverse_lossy(op: 'Operation[T, U]', *, limit: 'int', on_error: 'Callable[[T, Exception], object | Awaitable[object]] | None' = None) -> 'CollectionOperation[T, U]'
 ```
 
 Run every item and retain only successes, optionally reporting errors.
@@ -425,7 +492,7 @@ Run every item and retain only successes, optionally reporting errors.
 ## `traverse_parallel`
 
 ```python
-traverse_parallel(op: 'Operation[T, U]', *, limit: 'int') -> 'Operation[Iterable[T] | Mapping[Hashable, T], list[U] | dict[Hashable, U]]'
+traverse_parallel(op: 'Operation[T, U]', *, limit: 'int') -> 'CollectionOperation[T, U]'
 ```
 
 Run a bounded concurrent traversal and fail fast.

@@ -1,6 +1,7 @@
 """Typed unary asynchronous operations."""
 
 from fp_ops.collections import (
+    CollectionOperation,
     fanout_each,
     filter_best_effort,
     filter_each,
@@ -28,8 +29,8 @@ from fp_ops.composition import (
     tap_best_effort,
 )
 from fp_ops.core import (
-    Operation,
     UNIT,
+    Operation,
     Unit,
     constant,
     environment_operation,
@@ -40,7 +41,7 @@ from fp_ops.core import (
     result_operation,
     threaded_operation,
 )
-from fp_ops.environment import EMPTY_ENV, EnvKey, Environment, EnvironmentError
+from fp_ops.environment import EMPTY_ENV, Environment, EnvironmentError, EnvKey
 from fp_ops.objects import (
     MISSING,
     assign,
@@ -60,11 +61,21 @@ from fp_ops.result import (
     TraversalItemError,
     ok_value,
 )
+from fp_ops.templates import (
+    Placeholder,
+    _,
+    environment_operation_template,
+    environment_result_operation_template,
+    operation_template,
+    result_operation_template,
+    threaded_operation_template,
+)
 
 __version__ = "0.3.0"
 
 __all__ = [
     "BuildFieldError",
+    "CollectionOperation",
     "EMPTY_ENV",
     "Environment",
     "EnvironmentError",
@@ -74,10 +85,12 @@ __all__ = [
     "Ok",
     "Operation",
     "PathNotFoundError",
+    "Placeholder",
     "Result",
     "TraversalItemError",
     "UNIT",
     "Unit",
+    "_",
     "__version__",
     "assign",
     "assign_fields",
@@ -88,7 +101,9 @@ __all__ = [
     "constant",
     "default_on_error",
     "environment_operation",
+    "environment_operation_template",
     "environment_result_operation",
+    "environment_result_operation_template",
     "fail",
     "fallback",
     "fanout_all_settled",
@@ -104,16 +119,19 @@ __all__ = [
     "map_each",
     "merge_shallow",
     "operation",
+    "operation_template",
     "ok_value",
     "or_else",
     "pipe_all",
     "recover",
     "recover_with",
     "result_operation",
+    "result_operation_template",
     "retry",
     "tap",
     "tap_best_effort",
     "threaded_operation",
+    "threaded_operation_template",
     "traverse",
     "traverse_all_settled",
     "traverse_lossy",

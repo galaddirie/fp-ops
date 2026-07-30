@@ -38,8 +38,8 @@ def render() -> str:
         if name == "Operation":
             lines.extend(
                 [
-                    "Construct with `operation`, `result_operation`, an "
-                    "environment constructor, or another FP-Ops combinator.",
+                    "Construct with a unary constructor, a configured operation "
+                    "template, or another FP-Ops combinator.",
                     "",
                 ]
             )
@@ -53,6 +53,37 @@ def render() -> str:
                         "",
                     ]
                 )
+            continue
+        if name == "CollectionOperation":
+            lines.extend(
+                [
+                    "A unary `Operation` returned by collection combinators. "
+                    "Its overloads preserve iterable-to-list and "
+                    "mapping-to-dictionary shapes through execution and "
+                    "composition.",
+                    "",
+                ]
+            )
+            continue
+        if name in {
+            "operation_template",
+            "result_operation_template",
+            "threaded_operation_template",
+        }:
+            lines.extend(
+                [
+                    "```python",
+                    f"@{name}",
+                    "def configured(...): ...",
+                    "",
+                    "stage: Operation[A, B] = configured(..., _, ...)",
+                    "```",
+                    "",
+                    "The decorator preserves positional argument types through "
+                    "overloaded operation-template protocols.",
+                    "",
+                ]
+            )
             continue
         value_signature = signature(value)
         if value_signature is not None:
