@@ -11,11 +11,14 @@ from expression import Error, Ok, Result
 from fp_ops import (
     EMPTY_ENV,
     UNIT,
+    EnvKey,
     Environment,
     Operation,
     constant,
+    environment_operation,
     fail,
     identity,
+    ok_value,
     operation,
     result_operation,
     threaded_operation,
@@ -125,6 +128,31 @@ async def test_result_constructor_flattens_exactly_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_result_constructor_validates_its_declared_contract() -> None:
+    not_a_result = await result_operation(lambda _value: 3).run(UNIT)  # type: ignore[arg-type]
+    invalid_error = await result_operation(
+        lambda _value: Error("not an exception")  # type: ignore[arg-type]
+    ).run(UNIT)
+
+    assert not_a_result.is_error()
+    assert isinstance(not_a_result.error, TypeError)
+    assert invalid_error.is_error()
+    assert isinstance(invalid_error.error, TypeError)
+
+
+@pytest.mark.asyncio
+async def test_threaded_operation_recursively_awaits_its_result() -> None:
+    @threaded_operation
+    def nested(value: int) -> object:
+        async def finish() -> int:
+            return value + 1
+
+        return finish()
+
+    assert await nested.run(1) == Ok(2)
+
+
+@pytest.mark.asyncio
 async def test_map_preserves_returned_operation_and_flat_map_executes_one() -> None:
     returned = constant(9)
 
@@ -218,6 +246,52 @@ def test_then_rejects_callable_and_run_always_requires_value() -> None:
         stage.then(lambda value: value)  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         stage.run()  # type: ignore[call-arg]
+
+
+@pytest.mark.asyncio
+async def test_run_rejects_a_non_environment_and_rshift_composes() -> None:
+    increment = operation(lambda value: value + 1)
+    doubled = operation(lambda value: value * 2)
+
+    invalid = await increment.run(1, environment=object())  # type: ignore[arg-type]
+    assert invalid.is_error()
+    assert isinstance(invalid.error, TypeError)
+    assert await (increment >> doubled).run(2) == Ok(6)
+
+
+def test_public_constructors_reject_invalid_values() -> None:
+    invalid: Any = object()
+
+    with pytest.raises(TypeError):
+        operation(invalid)
+    with pytest.raises(TypeError):
+        result_operation(invalid)
+    with pytest.raises(TypeError):
+        threaded_operation(invalid)
+    with pytest.raises(TypeError):
+        environment_operation(EnvKey("value", int))(invalid)
+    with pytest.raises(TypeError):
+        fail(invalid)
+
+
+def test_source_metadata_and_result_extraction_edge_cases() -> None:
+    class Uninspectable:
+        @property
+        def __signature__(self) -> object:
+            raise ValueError("no signature")
+
+        def __call__(self, value: int) -> int:
+            return value
+
+    stage = operation(Uninspectable())
+    assert stage.source_signature is None
+    assert repr(UNIT) == "UNIT"
+    assert ok_value(Ok(3)) == 3
+
+    error = ValueError("failed")
+    with pytest.raises(ValueError) as raised:
+        ok_value(Error(error))
+    assert raised.value is error
 
 
 def test_constant_fail_and_identity_are_fresh_operation_values() -> None:

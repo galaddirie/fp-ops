@@ -1,26 +1,36 @@
-# FP-Ops
+# FP-Ops: Composable Async Pipelines for Python
 
-FP-Ops is a typed, immutable, asynchronous pipeline library centered on one
-unary abstraction:
+[![PyPI version](https://img.shields.io/badge/pypi-v0.3.1-blue.svg)](https://pypi.org/project/fp-ops/)
+[![Python versions](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/fp-ops/)
+[![codecov](https://codecov.io/gh/galaddirie/fp-ops/graph/badge.svg?token=8MHGFYBD8V)](https://codecov.io/gh/galaddirie/fp-ops)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Type checked: mypy + Pyright](https://img.shields.io/badge/type%20checked-mypy%20%2B%20Pyright-blue)](https://github.com/galaddirie/fp-ops/actions)
 
-```text
-Operation[A, B] = A -> Environment -> Awaitable[Result[B, Exception]]
-```
+FP-Ops turns regular Python functions into small, type-safe operations that are
+easy to compose, run, and test.
 
-An operation receives exactly one pipeline value. Successful values move from
-left to right; a read-only `Environment` supplies typed capabilities. `None`,
-`Result`, environment objects, and returned `Operation` objects remain ordinary
-data unless an explicitly named combinator says otherwise.
+Use it when a task has several steps—fetching data, validating it, transforming
+it, handling failures—and you want the whole pipeline to remain readable.
 
-FP-Ops requires Python 3.10 or newer.
+## Why FP-Ops?
 
-## Install
+- **Readable composition:** connect operations from left to right with `>>`.
+- **Sync and async together:** compose either kind of function in one pipeline.
+- **Explicit errors:** every run returns `Ok(value)` or `Error(exception)`.
+- **Strong typing:** pipeline inputs and outputs are checked by mypy and Pyright.
+- **Safe concurrency:** choose fail-fast, all-settled, or lossy behavior by name.
+- **Immutable building blocks:** configuring or composing an operation never
+  mutates the original.
+
+## Installation
 
 ```bash
 pip install fp-ops
 ```
 
-## Define, compose, and run
+FP-Ops supports Python 3.10 and newer.
+
+## Quick start
 
 ```python
 import asyncio
@@ -29,7 +39,7 @@ from fp_ops import Ok, operation
 
 
 @operation
-def parse(value: str) -> int:
+def parse_number(value: str) -> int:
     return int(value)
 
 
@@ -38,206 +48,134 @@ async def double(value: int) -> int:
     return value * 2
 
 
-pipeline = parse >> double
+pipeline = parse_number >> double
 
 
 async def main() -> None:
     assert await pipeline.run("21") == Ok(42)
 
+    invalid = await pipeline.run("not a number")
+    assert invalid.is_error()
+    assert isinstance(invalid.error, ValueError)
+
 
 asyncio.run(main())
 ```
 
-`>>` is the syntax alias for `.then`; both accept only an `Operation`, making
-the stage relationship visible to mypy and Pyright. Use `.map(callback)` for a
-raw successful-value transform. Use `.flat_map(callback)` only when the callback
-returns an `Operation[Unit, T]` that should execute with `UNIT`.
+An `Operation[A, B]` accepts one value of type `A` and produces a
+`Result[B, Exception]`. Ordinary exceptions become `Error` values, so a
+failed step stops the pipeline without hiding the reason.
 
-There is no callable or awaitable `Operation`, runtime argument binding, graph
-interface, or `.execute` alias.
+## Compose and transform
 
-## Configured stages and placeholders
-
-An operation template keeps configuration in ordinary function parameters while
-allowing the unary pipeline value to occupy any one direct positional slot:
+Use `>>` (or `.then()`) when the next step is another operation. Use
+`.map()` for a small value transformation.
 
 ```python
-from fp_ops import Operation, _, operation_template
+from fp_ops import operation
+
+
+@operation
+def username(user: dict[str, str]) -> str:
+    return user["name"]
+
+
+display_name = username.map(str.strip).map(str.title)
+```
+
+Pipelines are immutable and reusable:
+
+```python
+raw_name = username
+clean_name = username.map(str.strip)
+display_name = clean_name.map(str.title)
+```
+
+Creating `clean_name` or `display_name` does not change `username`.
+
+## Configure reusable operations
+
+Operation templates let you configure a multi-argument function while leaving
+one `_` slot for the pipeline value:
+
+```python
+from fp_ops import _, operation_template
 
 
 @operation_template
-def format_value(
-    prefix: str,
-    value: int,
-    suffix: str,
-    *,
-    scale: float = 1.0,
-) -> str:
-    return f"{prefix}{value * scale:g}{suffix}"
+def format_money(symbol: str, amount: float, *, precision: int = 2) -> str:
+    return f"{symbol}{amount:.{precision}f}"
 
 
-formatted: Operation[int, str] = format_value("$", _, "!", scale=2.0)
-pipeline = parse >> formatted
+usd = format_money("$", _, precision=2)
+# await usd.run(12.5) == Ok("$12.50")
 ```
 
-Calling a template requires exactly one `_` and immediately returns a normal,
-immutable unary `Operation`; placeholders never enter composition or execution.
-Configured arguments are validated against the original Python signature and
-snapshotted at construction.
+The template immediately creates a normal unary operation. Configuration is
+validated and captured when the operation is built—not later when it runs.
 
-Templates support one direct placeholder among the first six positional
-parameters. Trailing keyword-only configuration remains type-checked. Nested
-and multiple placeholders are rejected at construction. This one-hole rule is
-a construction-time guarantee rather than a complete type-level proof:
-parameters annotated as `Any` can hide invalid calls from a checker, but the
-runtime still rejects them. Variadic configuration is accepted when the direct
-placeholder occupies a fixed positional parameter, although checker support for
-forwarded variadic arguments is limited.
+## Handle failures
 
-Prefer keyword-only parameters for optional configuration; this preserves their
-defaults and names in the template type. A keyword argument may contain the
-placeholder at runtime, but mypy and Pyright deliberately support holes only in
-the fixed positional parameters. Use `result_operation_template` for a callable
-declaring `Result`, `threaded_operation_template` for blocking work, and
-`environment_operation_template(key)` or
-`environment_result_operation_template(key)` when the callable's final
-positional parameter is an injected capability. Keyword-only configuration may
-follow that capability.
-
-## Raw values and declared results
-
-`operation` lifts a callable that returns a raw value. It never guesses from
-the value's runtime type:
+Choose the behavior that matches your application:
 
 ```python
-from expression import Ok
-from fp_ops import UNIT, operation, result_operation
+from fp_ops import Ok, default_on_error, operation, retry
 
-raw = operation(lambda _: Ok(3))
-flattened = result_operation(lambda _: Ok(3))
 
-# await raw.run(UNIT)       == Ok(Ok(3))
-# await flattened.run(UNIT) == Ok(3)
+@operation
+def parse_number(value: str) -> int:
+    return int(value)
+
+
+safe_parse = default_on_error(parse_number, 0)
+resilient_parse = retry(parse_number, attempts=3, backoff=0.1)
+
+# await safe_parse.run("unknown") == Ok(0)
 ```
 
-Synchronous functions, async functions, and synchronous functions that return
-awaitables share one normalizer. Synchronous work runs inline. Use
-`threaded_operation` or `threaded_operation_template` to opt blocking work into
-`asyncio.to_thread`.
+- `recover` turns an exception into a value.
+- `recover_with` runs another operation after a failure.
+- `default_on_error` supplies a fixed fallback value.
+- `first | second` and `fallback(...)` try alternatives with the original
+  input.
+- `retry` retries an operation with a fixed or calculated backoff.
 
-After `.run` starts, ordinary `Exception` values become `Error(exception)`.
-`asyncio.CancelledError`, `KeyboardInterrupt`, `SystemExit`, and other
-`BaseException` subclasses propagate.
+## Work with collections
 
-## Typed environments
+Collection helpers preserve list order and mapping keys:
+
+```python
+from fp_ops import Ok, filter_each, map_each, operation
+
+
+@operation
+def scores(record: dict[str, list[int]]) -> list[int]:
+    return record["scores"]
+
+
+normalize_scores = (
+    scores
+    >> filter_each(lambda score: score >= 0)
+    >> map_each(lambda score: score / 100)
+)
+
+# await normalize_scores.run({"scores": [80, -1, 95]})
+# == Ok([0.8, 0.95])
+```
+
+Use raw callbacks with `map_each`, `filter_each`, and `fold`. Use nested
+operations with `traverse`, `filter_operation`, and `fold_operation`.
+`traverse_parallel` adds bounded concurrency when each item performs async
+work.
+
+## Build structured output
+
+Create dictionaries or typed models from the same input:
 
 ```python
 from dataclasses import dataclass
 
-from fp_ops import (
-    _,
-    EnvKey,
-    Environment,
-    environment_operation_template,
-)
-
-
-@dataclass
-class Rates:
-    tax: float
-
-
-RATES = EnvKey("rates", Rates)
-
-
-@environment_operation_template(RATES)
-def add_tax(
-    currency: str,
-    subtotal: float,
-    rates: Rates,
-    *,
-    precision: int = 2,
-) -> str:
-    return f"{currency}{subtotal * (1 + rates.tax):.{precision}f}"
-
-
-environment = Environment().with_value(RATES, Rates(tax=0.13))
-taxed = add_tax("$", _, precision=2)
-# result = await taxed.run(10.0, environment=environment)
-```
-
-Keys use object identity, not their names. `with_value` returns a new
-environment and validates the capability's runtime type. Missing requirements
-become an `EnvironmentError` inside `.run`. The same environment is used for
-every stage and can never be replaced by a successful output.
-
-The mapping is immutable; contained capabilities may still be mutable or
-concurrency-sensitive.
-
-## Explicit policy names
-
-Sequential and fail-fast behavior is the default:
-
-- `pipe_all(operations)` composes left to right.
-- `recover`, `recover_with`, and `default_on_error` handle failures.
-- `or_else` and `fallback` try alternatives with the original input.
-- `tap` propagates effect failures; `tap_best_effort` ignores them.
-- `retry(..., attempts=n, backoff=...)` counts the first call as an attempt.
-- `fanout_parallel` is fail-fast same-input concurrency.
-- `collect_named` is fail-fast named same-input concurrency.
-
-All-settled behavior has a different result shape:
-
-- `fanout_all_settled` returns one `Result` per branch.
-- `traverse_all_settled` returns one `Result` per item.
-- `build_all_settled` returns one `Result` per field.
-
-Lossy behavior is also explicit:
-
-- `traverse_lossy` retains successful items.
-- `filter_best_effort` treats predicate failures as rejection.
-- `build_lossy` omits failed fields.
-
-Fail-fast parallel operations cancel and await unfinished siblings. Fixed
-fanout accepts an optional concurrency `limit`; concurrent collection traversal
-requires one. Returned values preserve declaration/input order, not completion
-order.
-
-## Collections
-
-Raw callbacks and nested operations use different names:
-
-```python
-from fp_ops import (
-    filter_each,
-    fold,
-    map_each,
-    operation,
-    traverse,
-    traverse_parallel,
-)
-
-increment = operation(lambda value: value + 1)
-mapped = map_each(str)
-sequential = traverse(increment)
-concurrent = traverse_parallel(increment, limit=8)
-selected = filter_each(lambda value: value > 0)
-total = fold(lambda acc, value: acc + value, 0)
-```
-
-List order and mapping insertion order are preserved. A fail-fast item error is
-reported as `TraversalItemError(index, cause)`. Empty inputs do not invoke the
-callback. `map_each`, filtering, and traversal helpers return
-`CollectionOperation`, which remains a unary `Operation` while retaining
-list-versus-mapping output types during execution and composition. This keeps
-collection stages directly composable with typed templates.
-
-## Paths, builds, and assignment
-
-```python
-from dataclasses import dataclass
-
-from fp_ops import build, get_path
+from fp_ops import Ok, build, get_path
 
 
 @dataclass
@@ -253,26 +191,90 @@ to_user = build(
     },
     User,
 )
+
+data = {"profile": {"name": "Ada", "age": 36}}
+# await to_user.run(data) == Ok(User(name="Ada", age=36))
 ```
 
-`get_path` distinguishes an absent path from a present `None`. `build`
-evaluates schema fields in insertion order and fails with
-`BuildFieldError(field, cause)`. For operation- and callable-only schemas,
-`build` infers and enforces one shared input type across all fields. Represent a
-typed constant field with `constant(value)`; explicitly annotate a schema as
-`Mapping[str, Any]` only when dynamic constants are intentional.
-`merge_shallow`/`assign` merge same-input mapping sources; `assign_fields`
-copies an input mapping and applies shallow field assignments.
+`get_path` works with nested mappings, sequence indexes, and attributes.
+`assign`, `assign_fields`, and `merge_shallow` cover common mapping
+transformations.
 
-Mappings and sequences used as combinator configuration are snapshotted.
-Captured domain objects and environment capabilities are not transitively
-immutable.
+## Supply shared capabilities
 
-## Reference and migration
+An `Environment` provides typed dependencies such as configuration, clients,
+or sessions without mixing them into pipeline data:
 
-- [Generated top-level interface reference](docs/api-reference.md)
-- [0.3 breaking migration guide](docs/migration-0.3.md)
-- [Executable unary pipeline example](examples/unary_pipeline.py)
+```python
+from dataclasses import dataclass
 
-The source, good/bad consumer fixtures, and an isolated installed wheel are
-checked with both mypy and Pyright.
+from fp_ops import EnvKey, Environment, Ok, environment_operation
+
+
+@dataclass(frozen=True)
+class Settings:
+    base_url: str
+
+
+SETTINGS = EnvKey("settings", Settings)
+
+
+@environment_operation(SETTINGS)
+def user_url(user_id: int, settings: Settings) -> str:
+    return f"{settings.base_url}/users/{user_id}"
+
+
+environment = Environment().with_value(
+    SETTINGS,
+    Settings(base_url="https://api.example.com"),
+)
+
+# await user_url.run(7, environment=environment)
+# == Ok("https://api.example.com/users/7")
+```
+
+Environments are read-only and shared by every stage in a run.
+
+## Choose an execution policy
+
+Failure behavior is explicit in each helper's name:
+
+| Work | Fail fast | Keep every result | Keep successes |
+|---|---|---|---|
+| Parallel branches | `fanout_parallel` | `fanout_all_settled` | — |
+| Collection items | `traverse` / `traverse_parallel` | `traverse_all_settled` | `traverse_lossy` |
+| Object fields | `build` | `build_all_settled` | `build_lossy` |
+| Predicates | `filter_operation` | — | `filter_best_effort` |
+
+Fail-fast concurrent work cancels unfinished siblings. Concurrent collection
+helpers require a `limit`, and results retain input order rather than
+completion order.
+
+## Learn more
+
+- [API reference](docs/api-reference.md)
+- [0.3 migration guide](docs/migration-0.3.md)
+- [Executable example](examples/unary_pipeline.py)
+- [Changelog](CHANGELOG.md)
+
+Version 0.3 is a breaking redesign. If you are upgrading from 0.2, start with
+the migration guide; old `.execute()`, callable operations, binary `&`, and
+runtime argument binding have been replaced by explicit APIs.
+
+## Development
+
+```bash
+poetry install
+poetry run pytest
+poetry run mypy -p fp_ops
+poetry run pyright
+```
+
+## Contributing
+
+Contributions are welcome. Open an issue to discuss a larger change, or submit a
+pull request with tests for the behavior you are changing.
+
+## License
+
+FP-Ops is available under the [MIT License](LICENSE).

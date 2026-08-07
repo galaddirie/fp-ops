@@ -122,9 +122,7 @@ The single input value for deliberately nullary sources.
 
 ## `Unit`
 
-```python
-Unit(*values)
-```
+`Unit.UNIT`
 
 The single input value for deliberately nullary sources.
 
@@ -136,7 +134,7 @@ The construction-time hole filled by an operation's unary input.
 
 ## `__version__`
 
-`0.3.0`
+`0.3.1`
 
 ## `assign`
 

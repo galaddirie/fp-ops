@@ -84,6 +84,21 @@ def test_environment_rejects_wrong_capability_at_assembly() -> None:
         Environment().with_value(COUNTER, object())  # type: ignore[arg-type]
 
 
+def test_environment_validates_keys_and_exposes_mapping_metadata() -> None:
+    with pytest.raises(ValueError):
+        EnvKey("", Counter)
+    with pytest.raises(TypeError):
+        EnvKey("counter", object())  # type: ignore[arg-type]
+    with pytest.raises(EnvironmentError):
+        Environment({object(): Counter(1)})  # type: ignore[dict-item]
+
+    environment = Environment({COUNTER: Counter(1)})
+    assert list(environment) == [COUNTER]
+    assert len(environment) == 1
+    assert repr(COUNTER) == "EnvKey('counter', Counter)"
+    assert repr(environment) == "Environment(counter)"
+
+
 @pytest.mark.asyncio
 async def test_environment_result_constructor_flattens_declared_result() -> None:
     @environment_result_operation(COUNTER)
@@ -119,6 +134,99 @@ def test_invalid_fallback_and_retry_configuration_raise_synchronously() -> None:
         retry(constant(1), attempts=0)
     with pytest.raises(ValueError):
         retry(constant(1), attempts=1, backoff=-0.1)
+
+
+def test_combinators_reject_invalid_configuration() -> None:
+    invalid: Any = object()
+    stage = constant(1)
+
+    with pytest.raises(TypeError):
+        pipe_all([invalid])  # type: ignore[list-item]
+    with pytest.raises(TypeError):
+        recover(invalid, lambda _error: 1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        recover_with(stage, invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        or_else(stage, invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        fallback(stage, invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        tap(invalid, lambda _value: None)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        retry(invalid, attempts=1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        retry(stage, attempts=True)
+    with pytest.raises(TypeError):
+        retry(stage, attempts=1, backoff=invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        fanout_parallel(invalid)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        fanout_parallel(stage, limit=True)
+    with pytest.raises(TypeError):
+        collect_named(invalid=invalid)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_recovery_retry_and_empty_fanout_edge_cases() -> None:
+    handler_called = False
+
+    def handler(_error: Exception) -> int:
+        nonlocal handler_called
+        handler_called = True
+        return 2
+
+    assert await recover(constant(1), handler).run(UNIT) == Ok(1)
+    assert handler_called is False
+
+    invalid_recovery = await recover_with(
+        fail(ValueError("failed")),
+        lambda _error: 2,  # type: ignore[arg-type]
+    ).run(UNIT)
+    assert invalid_recovery.is_error()
+    assert isinstance(invalid_recovery.error, TypeError)
+
+    first_error = ValueError("first")
+    last_error = LookupError("last")
+    exhausted = await fallback(fail(first_error), fail(last_error)).run(UNIT)
+    assert exhausted == Error(last_error)
+
+    retried = await retry(
+        fail(ValueError("retry")),
+        attempts=2,
+        backoff=0.0001,
+    ).run(UNIT)
+    assert retried.is_error()
+    assert str(retried.error) == "retry"
+
+    invalid_backoff = await retry(
+        fail(ValueError("retry")),
+        attempts=2,
+        backoff=lambda _attempt, _error: True,
+    ).run(UNIT)
+    assert invalid_backoff.is_error()
+    assert isinstance(invalid_backoff.error, TypeError)
+
+    negative_backoff = await retry(
+        fail(ValueError("retry")),
+        attempts=2,
+        backoff=lambda _attempt, _error: -1,
+    ).run(UNIT)
+    assert negative_backoff.is_error()
+    assert isinstance(negative_backoff.error, ValueError)
+
+    assert await fanout_parallel().run(UNIT) == Ok(())
+
+
+@pytest.mark.asyncio
+async def test_default_value_survives_non_copyable_configuration() -> None:
+    class NonCopyable:
+        def __deepcopy__(self, _memo: dict[int, object]) -> object:
+            raise TypeError("not copyable")
+
+    value = NonCopyable()
+    outcome = await default_on_error(fail(ValueError("failed")), value).run(UNIT)
+    assert outcome.is_ok()
+    assert outcome.ok is value
 
 
 @pytest.mark.asyncio

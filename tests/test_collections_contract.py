@@ -176,3 +176,97 @@ def test_parallel_collection_limit_is_validated_at_construction() -> None:
         traverse_all_settled(stage, limit=-1)
     with pytest.raises(ValueError):
         traverse_lossy(stage, limit=0)
+
+
+def test_collection_helpers_reject_invalid_configuration() -> None:
+    invalid: Any = object()
+    stage = operation(lambda value: value)
+
+    with pytest.raises(TypeError):
+        map_each(invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        traverse(invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        traverse_lossy(stage, limit=1, on_error=invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        filter_each(invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        filter_operation(invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        fold(invalid, 0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        fold_operation(invalid, 0)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        fanout_each(stage, invalid)  # type: ignore[arg-type]
+
+
+def test_fold_configuration_tolerates_non_copyable_initial_values() -> None:
+    class NonCopyable:
+        def __deepcopy__(self, _memo: dict[int, object]) -> object:
+            raise TypeError("not copyable")
+
+    initial = NonCopyable()
+    assert fold(lambda current, _item: current, initial).name == "fold"
+    assert (
+        fold_operation(operation(lambda pair: pair[0]), initial).name
+        == "fold_operation"
+    )
+
+
+@pytest.mark.asyncio
+async def test_collection_helpers_report_callback_and_input_errors() -> None:
+    def broken(*_args: object) -> object:
+        raise ValueError("callback")
+
+    mapped = await map_each(broken).run([1])
+    selected = await filter_each(broken).run([1])
+    invalid_selection = await filter_each(lambda _value: 1).run([1])  # type: ignore[arg-type]
+    invalid_operation = operation(lambda _value: 1)
+    filtered = await filter_operation(invalid_operation).run([1])  # type: ignore[arg-type]
+    best_effort = await filter_best_effort(invalid_operation).run([1])  # type: ignore[arg-type]
+    folded = await fold(broken, 0).run([1])  # type: ignore[arg-type]
+    folded_operation = await fold_operation(
+        operation(broken),  # type: ignore[arg-type]
+        0,
+    ).run([1])
+    fanned = await fanout_each(operation(broken)).run([1])  # type: ignore[arg-type]
+
+    for outcome in (
+        mapped,
+        selected,
+        invalid_selection,
+        filtered,
+        folded,
+        folded_operation,
+        fanned,
+    ):
+        assert outcome.is_error()
+        assert isinstance(outcome.error, TraversalItemError)
+    assert best_effort == Ok([])
+
+    assert (
+        await map_each(lambda value: value).run(1)  # type: ignore[arg-type]
+    ).is_error()
+    assert (
+        await fold(lambda total, value: total + value, 0).run(1)  # type: ignore[arg-type]
+    ).is_error()
+    assert (
+        await fanout_each(operation(lambda value: value)).run(1)  # type: ignore[arg-type]
+    ).is_error()
+
+
+@pytest.mark.asyncio
+async def test_lossy_traversal_reports_on_error_callback_failures() -> None:
+    failed = result_operation(lambda value: Error(ValueError(str(value))))
+
+    def broken_report(_value: int, _error: Exception) -> None:
+        raise RuntimeError("report")
+
+    outcome = await traverse_lossy(
+        failed,
+        limit=1,
+        on_error=broken_report,
+    ).run([1])
+    assert outcome.is_error()
+    assert isinstance(outcome.error, TraversalItemError)
+    assert isinstance(outcome.error.cause, RuntimeError)

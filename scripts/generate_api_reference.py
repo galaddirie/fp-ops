@@ -5,7 +5,9 @@ from __future__ import annotations
 import inspect
 import sys
 from pathlib import Path
-from typing import Any, get_overloads
+from typing import Any
+
+from typing_extensions import get_overloads
 
 import fp_ops
 
@@ -65,6 +67,16 @@ def render() -> str:
                     "Its overloads preserve iterable-to-list and "
                     "mapping-to-dictionary shapes through execution and "
                     "composition.",
+                    "",
+                ]
+            )
+            continue
+        if name == "Unit":
+            lines.extend(
+                [
+                    "`Unit.UNIT`",
+                    "",
+                    inspect.getdoc(value).splitlines()[0],
                     "",
                 ]
             )

@@ -17,11 +17,10 @@ from typing import (
     TYPE_CHECKING,
     TypeVar,
     cast,
-    overload,
 )
 
 from expression import Result
-from typing_extensions import Never
+from typing_extensions import Never, overload
 
 from fp_ops._ast import (
     CallNode,

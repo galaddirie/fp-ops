@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.1] - 2026-08-07
+
+### Changed
+
+- Restored a concise, user-focused README with an approachable quick start,
+  common recipes, and links to the detailed API and migration references.
+
+### Fixed
+
+- Made API reference generation compatible with Python 3.10 and deterministic
+  across all supported Python versions.
+
 ## [0.3.0] - 2026-08-07
 
 ### Changed

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import copy, deepcopy
 from dataclasses import dataclass
 from importlib.util import find_spec
 from typing import Any
@@ -10,6 +11,7 @@ from expression import Error, Ok
 import fp_ops
 from fp_ops import (
     BuildFieldError,
+    MISSING,
     PathNotFoundError,
     assign,
     assign_fields,
@@ -32,6 +34,29 @@ async def test_get_path_distinguishes_missing_from_present_none() -> None:
     missing = await get_path("missing").run(data)
     assert missing.is_error()
     assert isinstance(missing.error, PathNotFoundError)
+
+
+@pytest.mark.asyncio
+async def test_get_path_attributes_empty_paths_and_uncopyable_defaults() -> None:
+    @dataclass
+    class Profile:
+        name: str
+
+    class NonCopyable:
+        def __deepcopy__(self, _memo: dict[int, object]) -> object:
+            raise TypeError("not copyable")
+
+    data = {"profile": Profile("Ada")}
+    fallback = NonCopyable()
+
+    assert await get_path("").run(data) == Ok(data)
+    assert await get_path("profile.name").run(data) == Ok("Ada")
+    missing = await get_path("items[4]", fallback).run({"items": [1]})
+    assert missing.is_ok()
+    assert missing.ok is fallback
+    assert repr(MISSING) == "MISSING"
+    assert copy(MISSING) is MISSING
+    assert deepcopy(MISSING) is MISSING
 
 
 @pytest.mark.asyncio
@@ -96,6 +121,17 @@ async def test_build_instantiates_models_and_nested_schema() -> None:
 
 
 @pytest.mark.asyncio
+async def test_build_uses_model_validate_when_available() -> None:
+    class Validated:
+        @classmethod
+        def model_validate(cls, values: dict[str, object]) -> tuple[str, object]:
+            return "validated", values["value"]
+
+    builder = build({"value": get_path("value")}, Validated)
+    assert await builder.run({"value": 3}) == Ok(("validated", 3))
+
+
+@pytest.mark.asyncio
 async def test_schema_and_assignment_configuration_is_snapshotted() -> None:
     literal = {"value": 1}
     schema = {"field": literal}
@@ -120,6 +156,41 @@ async def test_shallow_merge_and_assign_fail_fast() -> None:
     invalid = await merge_shallow(lambda _data: None).run({})  # type: ignore[arg-type]
     assert invalid.is_error()
     assert isinstance(invalid.error, TypeError)
+
+
+def test_object_helpers_reject_invalid_configuration() -> None:
+    invalid: Any = object()
+
+    with pytest.raises(TypeError):
+        build(invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        build({1: "value"})  # type: ignore[dict-item]
+    with pytest.raises(TypeError):
+        build({}, model=invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        merge_shallow(invalid)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        assign_fields(invalid)  # type: ignore[arg-type]
+
+
+def test_build_configuration_tolerates_non_copyable_constants() -> None:
+    class NonCopyable:
+        def __deepcopy__(self, _memo: dict[int, object]) -> object:
+            raise TypeError("not copyable")
+
+    assert build({"value": NonCopyable()}).name == "build"
+
+
+@pytest.mark.asyncio
+async def test_assign_fields_requires_a_mapping_and_wraps_field_errors() -> None:
+    invalid_input = await assign_fields(value=1).run([])  # type: ignore[arg-type]
+    failed_field = await assign_fields(value=operation(lambda _data: 1 / 0)).run({})
+
+    assert invalid_input.is_error()
+    assert isinstance(invalid_input.error, TypeError)
+    assert failed_field.is_error()
+    assert isinstance(failed_field.error, BuildFieldError)
+    assert failed_field.error.field == "value"
 
 
 def test_hard_cutover_exports_only_the_new_interface() -> None:
