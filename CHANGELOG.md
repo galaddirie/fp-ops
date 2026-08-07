@@ -26,6 +26,13 @@
   binding, callable/awaitable operations, binary `&`, and all compatibility
   behavior.
 
+### Fixed
+
+- Allowed `Operation.__or__` alternatives to produce different output types,
+  returning their union just like `or_else`.
+- Preserved list and mapping output shapes when filter operations are composed
+  within typed pipelines.
+
 ## [0.2.11] - 2025-06-09
 
 ### Added

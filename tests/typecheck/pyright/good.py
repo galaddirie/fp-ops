@@ -17,6 +17,9 @@ from fp_ops import (
     environment_operation,
     environment_operation_template,
     fanout_parallel,
+    filter_best_effort,
+    filter_each,
+    filter_operation,
     operation,
     operation_template,
     pipe_all,
@@ -42,6 +45,11 @@ def uppercase(value: str) -> str:
     return value.upper()
 
 
+@operation
+def no_value(value: str) -> None:
+    return None
+
+
 def deferred(value: int) -> Awaitable[str]:
     async def finish() -> str:
         return str(value)
@@ -50,6 +58,7 @@ def deferred(value: int) -> Awaitable[str]:
 
 
 assert_type(parse, Operation[str, int])
+assert_type(parse | no_value, Operation[str, int | None])
 assert_type(operation(deferred), Operation[int, str])
 assert_type(parse.then(double), Operation[str, int])
 assert_type(parse.map(str), Operation[str, str])
@@ -160,6 +169,59 @@ assert_type(
     titles >> summarize_mapping("got: ", _),
     Operation[Mapping[str, str], str],
 )
+
+
+def positive(value: int) -> bool:
+    return value > 0
+
+
+@operation
+def numbers(value: str) -> list[int]:
+    return [len(value)]
+
+
+@operation
+def keyed_numbers(value: str) -> dict[str, int]:
+    return {value: len(value)}
+
+
+@operation
+def count_list(values: list[int]) -> int:
+    return len(values)
+
+
+@operation
+def count_mapping(values: dict[str, int]) -> int:
+    return len(values)
+
+
+selected = filter_each(positive)
+assert_type(selected, CollectionOperation[int, int])
+assert_type(
+    filter_operation(operation(positive)),
+    CollectionOperation[int, int],
+)
+assert_type(
+    filter_best_effort(operation(positive)),
+    CollectionOperation[int, int],
+)
+assert_type(numbers >> selected, Operation[str, list[int]])
+assert_type(numbers.then(selected), Operation[str, list[int]])
+assert_type(numbers >> selected >> count_list, Operation[str, int])
+assert_type(keyed_numbers >> selected, Operation[str, dict[str, int]])
+assert_type(keyed_numbers.then(selected), Operation[str, dict[str, int]])
+assert_type(keyed_numbers >> selected >> count_mapping, Operation[str, int])
+
+
+async def check_filter_run_shapes() -> None:
+    assert_type(
+        await selected.run([1, 2]),
+        Result[list[int], Exception],
+    )
+    assert_type(
+        await selected.run({"one": 1}),
+        Result[dict[str, int], Exception],
+    )
 
 
 @environment_operation_template(LOGGER)

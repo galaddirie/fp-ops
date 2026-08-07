@@ -173,29 +173,22 @@ def _traverse(
 
 def filter_each(
     predicate: Callable[[T], bool | Awaitable[bool]],
-) -> Operation[
-    Iterable[T] | Mapping[Hashable, T],
-    list[T] | dict[Hashable, T],
-]:
+) -> CollectionOperation[T, T]:
     """Filter with a raw predicate and fail if the predicate raises."""
 
     if not callable(predicate):
         raise TypeError("filter_each() requires a callable")
     return cast(
-        Operation[
-            Iterable[T] | Mapping[Hashable, T],
-            list[T] | dict[Hashable, T],
-        ],
-        Operation._from_node(FilterEachNode(predicate), name="filter_each"),
+        CollectionOperation[T, T],
+        CollectionOperation._from_node(
+            FilterEachNode(predicate), name="filter_each"
+        ),
     )
 
 
 def filter_operation(
     predicate: Operation[T, bool],
-) -> Operation[
-    Iterable[T] | Mapping[Hashable, T],
-    list[T] | dict[Hashable, T],
-]:
+) -> CollectionOperation[T, T]:
     """Filter sequentially with an operation and fail fast."""
 
     return _filter_operation(predicate, best_effort=False)
@@ -203,10 +196,7 @@ def filter_operation(
 
 def filter_best_effort(
     predicate: Operation[T, bool],
-) -> Operation[
-    Iterable[T] | Mapping[Hashable, T],
-    list[T] | dict[Hashable, T],
-]:
+) -> CollectionOperation[T, T]:
     """Filter with an operation, treating predicate failures as rejection."""
 
     return _filter_operation(predicate, best_effort=True)
@@ -216,18 +206,12 @@ def _filter_operation(
     predicate: Operation[T, bool],
     *,
     best_effort: bool,
-) -> Operation[
-    Iterable[T] | Mapping[Hashable, T],
-    list[T] | dict[Hashable, T],
-]:
+) -> CollectionOperation[T, T]:
     if not isinstance(predicate, Operation):
         raise TypeError("operation filtering requires an Operation")
     return cast(
-        Operation[
-            Iterable[T] | Mapping[Hashable, T],
-            list[T] | dict[Hashable, T],
-        ],
-        Operation._from_node(
+        CollectionOperation[T, T],
+        CollectionOperation._from_node(
             FilterOperationNode(predicate._node, best_effort=best_effort),
             name="filter_best_effort" if best_effort else "filter_operation",
             requirements=predicate._requirements,

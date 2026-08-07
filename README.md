@@ -227,10 +227,10 @@ total = fold(lambda acc, value: acc + value, 0)
 
 List order and mapping insertion order are preserved. A fail-fast item error is
 reported as `TraversalItemError(index, cause)`. Empty inputs do not invoke the
-callback. `map_each` and the traversal helpers return `CollectionOperation`,
-which remains a unary `Operation` while retaining list-versus-mapping output
-types during execution and composition. This keeps collection stages directly
-composable with typed templates.
+callback. `map_each`, filtering, and traversal helpers return
+`CollectionOperation`, which remains a unary `Operation` while retaining
+list-versus-mapping output types during execution and composition. This keeps
+collection stages directly composable with typed templates.
 
 ## Paths, builds, and assignment
 

@@ -69,6 +69,8 @@ run(self, value: 'A_contra', *, environment: 'Environment' = Environment()) -> '
 ```
 
 ```python
+then(self: 'Operation[A, list[T]]', next: 'CollectionOperation[T, C]') -> 'Operation[A, list[C]]'
+then(self: 'Operation[A, Mapping[K, T]]', next: 'CollectionOperation[T, C]') -> 'Operation[A, dict[K, C]]'
 then(self, next: 'Operation[B_co, C]') -> 'Operation[A_contra, C]'
 ```
 
@@ -275,7 +277,7 @@ Run same-input branches concurrently, failing and cancelling early.
 ## `filter_best_effort`
 
 ```python
-filter_best_effort(predicate: 'Operation[T, bool]') -> 'Operation[Iterable[T] | Mapping[Hashable, T], list[T] | dict[Hashable, T]]'
+filter_best_effort(predicate: 'Operation[T, bool]') -> 'CollectionOperation[T, T]'
 ```
 
 Filter with an operation, treating predicate failures as rejection.
@@ -283,7 +285,7 @@ Filter with an operation, treating predicate failures as rejection.
 ## `filter_each`
 
 ```python
-filter_each(predicate: 'Callable[[T], bool | Awaitable[bool]]') -> 'Operation[Iterable[T] | Mapping[Hashable, T], list[T] | dict[Hashable, T]]'
+filter_each(predicate: 'Callable[[T], bool | Awaitable[bool]]') -> 'CollectionOperation[T, T]'
 ```
 
 Filter with a raw predicate and fail if the predicate raises.
@@ -291,7 +293,7 @@ Filter with a raw predicate and fail if the predicate raises.
 ## `filter_operation`
 
 ```python
-filter_operation(predicate: 'Operation[T, bool]') -> 'Operation[Iterable[T] | Mapping[Hashable, T], list[T] | dict[Hashable, T]]'
+filter_operation(predicate: 'Operation[T, bool]') -> 'CollectionOperation[T, T]'
 ```
 
 Filter sequentially with an operation and fail fast.

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
@@ -11,7 +12,9 @@ from typing import (
     Awaitable,
     Callable,
     Generic,
+    Hashable,
     Protocol,
+    TYPE_CHECKING,
     TypeVar,
     cast,
     overload,
@@ -32,11 +35,15 @@ from fp_ops._ast import (
 from fp_ops._invoke import Invocation
 from fp_ops.environment import EMPTY_ENV, EnvKey, Environment
 
+if TYPE_CHECKING:
+    from fp_ops.collections import CollectionOperation
+
 A = TypeVar("A")
 B = TypeVar("B")
 C = TypeVar("C")
 T = TypeVar("T")
 E = TypeVar("E")
+K = TypeVar("K", bound=Hashable)
 T_co = TypeVar("T_co", covariant=True)
 A_contra = TypeVar("A_contra", contravariant=True)
 B_co = TypeVar("B_co", covariant=True)
@@ -113,7 +120,22 @@ class Operation(Generic[A_contra, B_co]):
             await run(self._node, value, environment, self._requirements),
         )
 
-    def then(self, next: Operation[B_co, C]) -> Operation[A_contra, C]:
+    @overload
+    def then(
+        self: Operation[A, list[T]],
+        next: CollectionOperation[T, C],
+    ) -> Operation[A, list[C]]: ...
+
+    @overload
+    def then(
+        self: Operation[A, Mapping[K, T]],
+        next: CollectionOperation[T, C],
+    ) -> Operation[A, dict[K, C]]: ...
+
+    @overload
+    def then(self, next: Operation[B_co, C]) -> Operation[A_contra, C]: ...
+
+    def then(self, next: Operation[Any, Any]) -> Operation[Any, Any]:
         """Compose two operations left to right, preserving one environment."""
 
         if not isinstance(next, Operation):
@@ -129,14 +151,11 @@ class Operation(Generic[A_contra, B_co]):
             if isinstance(next._node, SequenceNode)
             else (next._node,)
         )
-        return cast(
-            Operation[A_contra, C],
-            Operation._create(
-                SequenceNode(left + right),
-                name=f"{self.name}.then({next.name})",
-                requirements=_merge_requirements(
-                    self._requirements, next._requirements
-                ),
+        return Operation._create(
+            SequenceNode(left + right),
+            name=f"{self.name}.then({next.name})",
+            requirements=_merge_requirements(
+                self._requirements, next._requirements
             ),
         )
 
@@ -166,12 +185,29 @@ class Operation(Generic[A_contra, B_co]):
             ),
         )
 
-    def __rshift__(self, next: Operation[B_co, C]) -> Operation[A_contra, C]:
+    @overload
+    def __rshift__(
+        self: Operation[A, list[T]],
+        next: CollectionOperation[T, C],
+    ) -> Operation[A, list[C]]: ...
+
+    @overload
+    def __rshift__(
+        self: Operation[A, Mapping[K, T]],
+        next: CollectionOperation[T, C],
+    ) -> Operation[A, dict[K, C]]: ...
+
+    @overload
+    def __rshift__(
+        self, next: Operation[B_co, C]
+    ) -> Operation[A_contra, C]: ...
+
+    def __rshift__(self, next: Operation[Any, Any]) -> Operation[Any, Any]:
         return self.then(next)
 
     def __or__(
-        self, alternative: Operation[A_contra, B_co]
-    ) -> Operation[A_contra, B_co]:
+        self, alternative: Operation[A_contra, C]
+    ) -> Operation[A_contra, B_co | C]:
         from fp_ops.composition import or_else
 
         return or_else(self, alternative)

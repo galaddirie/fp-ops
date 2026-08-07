@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, get_overloads
 
 import fp_ops
 
@@ -45,10 +45,14 @@ def render() -> str:
             )
             for method_name in ("run", "then", "map", "flat_map"):
                 method = getattr(value, method_name)
+                signatures = get_overloads(method) or (method,)
                 lines.extend(
                     [
                         "```python",
-                        f"{method_name}{inspect.signature(method)}",
+                        *(
+                            f"{method_name}{inspect.signature(item)}"
+                            for item in signatures
+                        ),
                         "```",
                         "",
                     ]
