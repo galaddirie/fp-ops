@@ -79,7 +79,7 @@ async def test_missing_environment_requirement_is_an_error_before_effects() -> N
     assert called is False
 
 
-def test_environment_rejects_wrong_capability_at_assembly() -> None:
+def test_environment_rejects_wrong_value_type_at_assembly() -> None:
     with pytest.raises(EnvironmentError):
         Environment().with_value(COUNTER, object())  # type: ignore[arg-type]
 

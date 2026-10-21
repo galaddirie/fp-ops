@@ -111,6 +111,20 @@ async def test_template_snapshots_configuration_and_preserves_metadata() -> None
 
 
 @pytest.mark.asyncio
+async def test_template_keeps_non_container_operands_by_identity() -> None:
+    class Handle:
+        def __deepcopy__(self, _memo: dict[int, object]) -> object:
+            raise AssertionError("operands must not be deep-copied")
+
+    @operation_template
+    def same(handle: Handle, value: int) -> Handle:
+        return handle
+
+    handle = Handle()
+    assert await same(handle, _).run(1) == Ok(handle)
+
+
+@pytest.mark.asyncio
 async def test_keyword_placeholder_works_at_runtime() -> None:
     @operation_template
     def render(prefix: str, value: int, *, suffix: str) -> str:
@@ -145,7 +159,7 @@ COUNTER = EnvKey("counter", Counter)
 
 
 @pytest.mark.asyncio
-async def test_environment_templates_inject_final_capability() -> None:
+async def test_environment_templates_inject_final_value() -> None:
     @environment_operation_template(COUNTER)
     def add(
         prefix: str,

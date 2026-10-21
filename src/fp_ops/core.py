@@ -368,7 +368,7 @@ class _EnvironmentDecorator(Generic[T]):
 
 
 def environment_operation(key: EnvKey[T]) -> EnvironmentOperationDecorator[T]:
-    """Bind one capability type, then decorate a raw-value callable."""
+    """Bind one environment key, then decorate a raw-value callable."""
 
     return cast(
         EnvironmentOperationDecorator[T],
@@ -379,7 +379,7 @@ def environment_operation(key: EnvKey[T]) -> EnvironmentOperationDecorator[T]:
 def environment_result_operation(
     key: EnvKey[T],
 ) -> EnvironmentResultOperationDecorator[T]:
-    """Bind one capability type, then decorate a ``Result`` callable."""
+    """Bind one environment key, then decorate a ``Result`` callable."""
 
     return cast(
         EnvironmentResultOperationDecorator[T],

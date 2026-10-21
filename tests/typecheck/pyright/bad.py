@@ -40,14 +40,14 @@ one_level = result_operation(nested_result)
 double_nested: Operation[int, int] = one_level
 
 
-class Capability:
+class Settings:
     pass
 
 
-CAPABILITY = EnvKey("capability", Capability)
+SETTINGS = EnvKey("settings", Settings)
 
-# reportArgumentType: wrong capability value
-wrong_environment = Environment().with_value(CAPABILITY, "wrong")
+# reportArgumentType: wrong environment value type
+wrong_environment = Environment().with_value(SETTINGS, "wrong")
 
 
 @operation_template

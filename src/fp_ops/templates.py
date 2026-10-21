@@ -65,12 +65,15 @@ _ = Placeholder()
 
 
 def _snapshot(value: object) -> object:
-    if isinstance(value, Placeholder):
-        return value
-    try:
-        return copy.deepcopy(value)
-    except Exception:
-        return value
+    """Shallow-copy builtin mutable containers; keep every other operand as-is.
+
+    Operands such as clients, handles, or frozen records are stored by
+    identity, so templates never need to know how to copy them.
+    """
+
+    if type(value) in (list, dict, set, bytearray):
+        return copy.copy(value)
+    return value
 
 
 class _OperationTemplate(Generic[R]):
@@ -93,7 +96,7 @@ class _OperationTemplate(Generic[R]):
             ) from error
 
         source_parameters = tuple(source_signature.parameters.values())
-        capability_parameter: inspect.Parameter | None = None
+        environment_parameter: inspect.Parameter | None = None
         visible_parameters = source_parameters
         if environment_key is not None:
             positional_parameters = tuple(
@@ -107,14 +110,14 @@ class _OperationTemplate(Generic[R]):
             )
             if not positional_parameters:
                 raise TypeError(
-                    "environment operation template requires a capability as its "
-                    "final positional parameter"
+                    "environment operation template requires the environment value "
+                    "as its final positional parameter"
                 )
-            capability_parameter = positional_parameters[-1]
+            environment_parameter = positional_parameters[-1]
             visible_parameters = tuple(
                 parameter
                 for parameter in source_parameters
-                if parameter is not capability_parameter
+                if parameter is not environment_parameter
             )
 
         positional_count = sum(
@@ -139,7 +142,7 @@ class _OperationTemplate(Generic[R]):
         self._visible_signature = source_signature.replace(
             parameters=visible_parameters
         )
-        self._capability_parameter = capability_parameter
+        self._environment_parameter = environment_parameter
         self._positional_count = positional_count
         functools.update_wrapper(self, fn)
         self.__signature__ = self._visible_signature
@@ -189,16 +192,16 @@ class _OperationTemplate(Generic[R]):
                 operation(cast(Callable[[Any], Any], configured)),
             )
 
-        capability_parameter = self._capability_parameter
-        assert capability_parameter is not None
+        environment_parameter = self._environment_parameter
+        assert environment_parameter is not None
 
         def configured_with_environment(
             value: object,
-            capability: object,
+            dependency: object,
         ) -> object:
             arguments = OrderedDict(captured)
             arguments[hole_name] = value
-            arguments[capability_parameter.name] = capability
+            arguments[environment_parameter.name] = dependency
             resolved = inspect.BoundArguments(
                 self._source_signature,
                 arguments,
@@ -870,7 +873,7 @@ class EnvironmentResultOperationTemplateDecorator(Generic[T]):
 def environment_operation_template(
     key: EnvKey[T],
 ) -> EnvironmentOperationTemplateDecorator[T]:
-    """Bind a capability and decorate a raw-value operation template."""
+    """Bind one environment key and decorate a raw-value operation template."""
 
     return EnvironmentOperationTemplateDecorator(key)
 
@@ -878,7 +881,7 @@ def environment_operation_template(
 def environment_result_operation_template(
     key: EnvKey[T],
 ) -> EnvironmentResultOperationTemplateDecorator[T]:
-    """Bind a capability and decorate a Result-returning operation template."""
+    """Bind one environment key and decorate a Result-returning operation template."""
 
     return EnvironmentResultOperationTemplateDecorator(key)
 

@@ -200,7 +200,7 @@ data = {"profile": {"name": "Ada", "age": 36}}
 `assign`, `assign_fields`, and `merge_shallow` cover common mapping
 transformations.
 
-## Supply shared capabilities
+## Supply shared dependencies
 
 An `Environment` provides typed dependencies such as configuration, clients,
 or sessions without mixing them into pipeline data:
