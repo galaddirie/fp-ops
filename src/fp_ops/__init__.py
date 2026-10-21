@@ -30,6 +30,7 @@ from fp_ops.composition import (
 )
 from fp_ops.core import (
     UNIT,
+    Fanout,
     Operation,
     Unit,
     constant,
@@ -81,6 +82,7 @@ __all__ = [
     "EnvironmentError",
     "EnvKey",
     "Error",
+    "Fanout",
     "MISSING",
     "Ok",
     "Operation",

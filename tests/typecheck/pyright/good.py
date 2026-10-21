@@ -10,6 +10,7 @@ from fp_ops import (
     CollectionOperation,
     Environment,
     EnvKey,
+    Fanout,
     Operation,
     _,
     build,
@@ -67,6 +68,10 @@ assert_type(
     fanout_parallel(parse, uppercase),
     Operation[str, tuple[int, str]],
 )
+assert_type(parse & uppercase, Fanout[str, int, str])
+assert_type(parse & uppercase & parse, Fanout[str, int, str, int])
+assert_type(parse & (uppercase & parse), Fanout[str, int, tuple[str, int]])
+flat_fanout: Operation[str, tuple[int, str, int]] = parse & uppercase & parse
 
 
 class Summary:

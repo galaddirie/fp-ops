@@ -19,6 +19,9 @@ needs_bytes: Operation[bytes, float] = operation(lambda value: float(value))
 # reportArgumentType: incompatible stage input
 invalid_pipeline = to_text.then(needs_bytes)
 
+# reportOperatorIssue: fanout branches must share one input
+invalid_fanout = to_text & needs_bytes
+
 # reportCallIssue: missing unary run input
 missing_input = to_text.run()
 

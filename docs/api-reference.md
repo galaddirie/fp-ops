@@ -50,6 +50,10 @@ Raised when an environment is missing a key or holds the wrong type.
 Error(error: '_TError') -> 'Result[Any, _TError]'
 ```
 
+## `Fanout`
+
+A fail-fast parallel `Operation[A, tuple[...]]` built with `&`. `a & b & c` returns a flat `(a, b, c)` tuple; an operand that returns a tuple, or a parenthesized right-hand `&`, stays one branch.
+
 ## `MISSING`
 
 `from fp_ops import MISSING`

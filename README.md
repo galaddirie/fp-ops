@@ -14,7 +14,8 @@ it, handling failures—and you want the whole pipeline to remain readable.
 
 ## Why FP-Ops?
 
-- **Readable composition:** connect operations from left to right with `>>`.
+- **Readable composition:** chain steps with `>>`, try alternatives with `|`,
+  and run branches in parallel with `&`.
 - **Sync and async together:** compose either kind of function in one pipeline.
 - **Explicit errors:** every run returns `Ok(value)` or `Error(exception)`.
 - **Strong typing:** pipeline inputs and outputs are checked by mypy and Pyright.
@@ -241,10 +242,14 @@ Failure behavior is explicit in each helper's name:
 
 | Work | Fail fast | Keep every result | Keep successes |
 |---|---|---|---|
-| Parallel branches | `fanout_parallel` | `fanout_all_settled` | — |
+| Parallel branches | `a & b` / `fanout_parallel` | `fanout_all_settled` | — |
 | Collection items | `traverse` / `traverse_parallel` | `traverse_all_settled` | `traverse_lossy` |
 | Object fields | `build` | `build_all_settled` | `build_lossy` |
 | Predicates | `filter_operation` | — | `filter_best_effort` |
+
+`a & b & c` runs every branch on the same input and returns a flat
+`(a, b, c)` tuple. Only an `&` chain is flattened: a branch that returns a
+tuple stays one value, and `a & (b & c)` nests as `(a, (b, c))`.
 
 Fail-fast concurrent work cancels unfinished siblings. Concurrent collection
 helpers require a `limit`, and results retain input order rather than
@@ -258,8 +263,9 @@ completion order.
 - [Changelog](CHANGELOG.md)
 
 Version 0.3 is a breaking redesign. If you are upgrading from 0.2, start with
-the migration guide; old `.execute()`, callable operations, binary `&`, and
-runtime argument binding have been replaced by explicit APIs.
+the migration guide; old `.execute()`, callable operations, and runtime argument
+binding have been replaced by explicit APIs. Binary `&` returned in 0.4 as a
+typed, fail-fast fanout.
 
 ## Development
 

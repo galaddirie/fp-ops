@@ -71,6 +71,17 @@ def render() -> str:
                 ]
             )
             continue
+        if name == "Fanout":
+            lines.extend(
+                [
+                    "A fail-fast parallel `Operation[A, tuple[...]]` built with "
+                    "`&`. `a & b & c` returns a flat `(a, b, c)` tuple; an "
+                    "operand that returns a tuple, or a parenthesized "
+                    "right-hand `&`, stays one branch.",
+                    "",
+                ]
+            )
+            continue
         if name == "Unit":
             lines.extend(
                 [

@@ -30,8 +30,11 @@ Returning an `Operation` from `.map` leaves it as ordinary data.
 | `sequences.zip` | `fanout_each` |
 
 `>>` remains a thin alias for `.then`. `|` remains a thin alias for
-`or_else`. Binary `&`, graph ports, runtime partial binding, and the old
-placeholder renderer are gone.
+`or_else`. Graph ports, runtime partial binding, and the old placeholder
+renderer are gone.
+
+Binary `&` was removed in 0.3 and restored in 0.4 as a fail-fast fanout. Unlike
+0.2, `a & b & c` returns a flat `(a, b, c)` tuple rather than `((a, b), c)`.
 
 Construction-only templates retain the useful one-hole syntax without making
 `Operation` callable:

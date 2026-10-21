@@ -25,6 +25,7 @@ def run_mypy() -> None:
         'Missing positional argument "value"': "[call-arg]",
         "Incompatible types in assignment": "[assignment]",
         "with_value": "[misc]",
+        "Unsupported operand types for &": "[operator]",
     }
     for message, code in expected.items():
         assert message in output and code in output, output
@@ -57,6 +58,7 @@ def run_pyright() -> None:
         "reportArgumentType",
         "reportCallIssue",
         "reportAssignmentType",
+        "reportOperatorIssue",
     }.issubset(rules), report
 
 
