@@ -138,7 +138,7 @@ The construction-time hole filled by an operation's unary input.
 
 ## `__version__`
 
-`0.3.1`
+`0.4.0`
 
 ## `assign`
 
