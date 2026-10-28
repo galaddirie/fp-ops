@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "expression (>=5.6.0,<6.0.0)",
+    "expression (>=5.6.0,<5.7.0)",
     "typing-extensions (>=4.12.0)",
 ]
 
