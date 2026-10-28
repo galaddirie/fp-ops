@@ -210,7 +210,6 @@ def test_hard_cutover_exports_only_the_new_interface() -> None:
     assert not hasattr(fp_ops.Operation, "execute")
     assert not hasattr(fp_ops.Operation, "bind")
     assert not hasattr(fp_ops.Operation, "apply_cont")
-    assert not hasattr(fp_ops.Operation, "__and__")
     assert "BaseContext" not in fp_ops.__all__
     assert "Placeholder" in fp_ops.__all__
 
@@ -218,6 +217,7 @@ def test_hard_cutover_exports_only_the_new_interface() -> None:
         "CollectionOperation",
         "EMPTY_ENV",
         "EnvKey",
+        "Fanout",
         "Environment",
         "Operation",
         "UNIT",

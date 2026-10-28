@@ -79,7 +79,7 @@ async def test_missing_environment_requirement_is_an_error_before_effects() -> N
     assert called is False
 
 
-def test_environment_rejects_wrong_capability_at_assembly() -> None:
+def test_environment_rejects_wrong_value_type_at_assembly() -> None:
     with pytest.raises(EnvironmentError):
         Environment().with_value(COUNTER, object())  # type: ignore[arg-type]
 
@@ -293,6 +293,46 @@ async def test_fanout_output_order_all_settled_and_named_shape() -> None:
     assert await collect_named(first=slow, second=fast).run(1) == Ok(
         {"first": 2, "second": 3}
     )
+
+
+@pytest.mark.asyncio
+async def test_ampersand_fans_out_flat_only_across_an_ampersand_chain() -> None:
+    increment = operation(lambda value: value + 1)
+    double = operation(lambda value: value * 2)
+    text = operation(lambda value: str(value))
+    pair = operation(lambda value: (value, value))
+
+    assert await (increment & double).run(3) == Ok((4, 6))
+    assert await (increment & double & text).run(3) == Ok((4, 6, "3"))
+    assert await (pair & text).run(3) == Ok(((3, 3), "3"))
+    assert await (increment & (double & text)).run(3) == Ok((4, (6, "3")))
+    assert await ((increment & double) >> operation(sum)).run(3) == Ok(10)
+    assert await ((increment & double).map(sum) & text).run(3) == Ok((10, "3"))
+
+
+@pytest.mark.asyncio
+async def test_ampersand_fails_fast_and_merges_environment_requirements() -> None:
+    key = EnvKey("offset", int)
+    offset = environment_operation(key)(lambda value, amount: value + amount)
+    broken = fail(ValueError("branch"))
+
+    fanout = offset & constant("x") & offset
+    assert fanout.required_environment == (key,)
+    assert await fanout.run(
+        1, environment=Environment().with_value(key, 10)
+    ) == Ok((11, "x", 11))
+    outcome = await (constant(1) & broken & constant(2)).run(UNIT)
+    assert outcome.is_error()
+    assert str(outcome.error) == "branch"
+
+
+def test_ampersand_rejects_non_operation_operands() -> None:
+    invalid: Any = object()
+
+    with pytest.raises(TypeError):
+        constant(1) & invalid
+    with pytest.raises(TypeError):
+        constant(1) & constant(2) & invalid
 
 
 @pytest.mark.asyncio

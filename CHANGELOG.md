@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.4.0] - 2026-10-21
+
+### Added
+
+- Restored binary `&` as a typed, fail-fast parallel fanout. `a & b & c`
+  returns a flat `(a, b, c)` tuple typed as `Fanout[A, B, C, D]`, a subtype of
+  `Operation[A, tuple[B, C, D]]`. Only an `&` chain flattens; tuple-returning
+  operands and a parenthesized right-hand `&` stay single branches.
+
+### Changed
+
+- Templates no longer deep-copy configuration operands. Builtin `list`,
+  `dict`, `set`, and `bytearray` operands are shallow-copied; every other
+  operand (clients, handles, frozen records) is kept by identity, so values no
+  longer need `__copy__`/`__deepcopy__` overrides to be used as operands.
+- Environment docs and error messages describe typed keys and values instead
+  of "capabilities".
+
+### Fixed
+
+- Capped `expression` below 5.7. Its awaitable `Result` was unwrapped by
+  FP-Ops' await normalization, breaking `result_operation` and templates at
+  runtime and in type checking.
+
 ## [0.3.1] - 2026-08-07
 
 ### Changed

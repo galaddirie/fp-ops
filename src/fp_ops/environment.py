@@ -1,4 +1,4 @@
-"""Typed, immutable capability environments."""
+"""Typed, immutable environments of shared dependencies."""
 # pyright: reportUnnecessaryIsInstance=false
 
 from __future__ import annotations
@@ -10,11 +10,11 @@ T = TypeVar("T")
 
 
 class EnvironmentError(Exception):
-    """Raised when an environment cannot satisfy a capability requirement."""
+    """Raised when an environment is missing a key or holds the wrong type."""
 
 
 class EnvKey(Generic[T]):
-    """An identity key carrying the runtime type of one environment capability."""
+    """An identity key carrying the runtime type of one environment value."""
 
     __slots__ = ("name", "value_type")
 
@@ -31,7 +31,7 @@ class EnvKey(Generic[T]):
 
 
 class Environment:
-    """A read-only mapping from typed identity keys to capabilities."""
+    """A read-only mapping from typed identity keys to values."""
 
     __slots__ = ("_values",)
 
@@ -49,18 +49,18 @@ class Environment:
             raise EnvironmentError(f"invalid environment key: {key!r}")
         if not isinstance(value, key.value_type):
             raise EnvironmentError(
-                f"capability {key.name!r} requires {key.value_type.__name__}, "
+                f"environment key {key.name!r} requires {key.value_type.__name__}, "
                 f"got {type(value).__name__}"
             )
 
     def require(self, key: EnvKey[T]) -> T:
-        """Return a capability or raise :class:`EnvironmentError`."""
+        """Return the value for ``key`` or raise :class:`EnvironmentError`."""
 
         try:
             value = self._values[cast(EnvKey[object], key)]
         except KeyError:
             raise EnvironmentError(
-                f"missing required environment capability {key.name!r}"
+                f"missing required environment key {key.name!r}"
             ) from None
         self._validate(cast(EnvKey[object], key), value)
         return cast(T, value)

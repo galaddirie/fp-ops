@@ -1,6 +1,6 @@
 [project]
 name = "fp-ops"
-version = "0.3.1"
+version = "0.4.0"
 description = "Typed, immutable, asynchronous unary pipelines for Python"
 authors = [
     {name = "Galad Dirie", email = "hello@galad.ca"}
@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "expression (>=5.6.0,<6.0.0)",
+    "expression (>=5.6.0,<5.7.0)",
     "typing-extensions (>=4.12.0)",
 ]
 

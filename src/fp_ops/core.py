@@ -20,12 +20,13 @@ from typing import (
 )
 
 from expression import Result
-from typing_extensions import Never, overload
+from typing_extensions import Never, TypeVarTuple, Unpack, overload
 
 from fp_ops._ast import (
     CallNode,
     ConstantNode,
     FailNode,
+    FanoutNode,
     FlatMapNode,
     IdentityNode,
     Node,
@@ -46,6 +47,7 @@ K = TypeVar("K", bound=Hashable)
 T_co = TypeVar("T_co", covariant=True)
 A_contra = TypeVar("A_contra", contravariant=True)
 B_co = TypeVar("B_co", covariant=True)
+Ts = TypeVarTuple("Ts")
 
 
 class Unit(Enum):
@@ -211,6 +213,11 @@ class Operation(Generic[A_contra, B_co]):
 
         return or_else(self, alternative)
 
+    def __and__(
+        self: Operation[A, B], other: Operation[A, C]
+    ) -> Fanout[A, B, C]:
+        return _fanout_with((), self, other)
+
     @property
     def required_environment(self) -> tuple[EnvKey[object], ...]:
         """The statically known environment keys required by this AST."""
@@ -234,6 +241,47 @@ class Operation(Generic[A_contra, B_co]):
             source_signature=source_signature,
             requirements=requirements,
         )
+
+
+class Fanout(Operation[A, tuple[Unpack[Ts]]], Generic[A, Unpack[Ts]]):
+    """A fail-fast ``&`` fanout; another ``&`` appends a branch flatly.
+
+    ``a & b & c`` yields ``(a_out, b_out, c_out)``. Only an ``&`` chain is
+    flattened: an operand that merely returns a tuple, or a parenthesized
+    right-hand ``&``, stays a single branch.
+    """
+
+    # The flat result is the point of this type, so it narrows the base shape.
+    def __and__(  # type: ignore[override]
+        self, other: Operation[A, C]
+    ) -> Fanout[A, Unpack[Ts], C]:
+        return _fanout_with(cast(FanoutNode, self._node).branches, self, other)
+
+
+def _fanout_with(
+    branches: tuple[tuple[str | None, Node], ...],
+    left: Operation[Any, Any],
+    right: Operation[Any, Any],
+) -> Fanout[Any, Unpack[tuple[Any, ...]]]:
+    if not isinstance(right, Operation):
+        raise TypeError("& requires an Operation operand")
+    if not branches:
+        branches = ((None, left._node),)
+    return cast(
+        Fanout[Any, Unpack[tuple[Any, ...]]],
+        Fanout._create(
+            FanoutNode(
+                branches + ((None, right._node),),
+                mode="fail_fast",
+                named=False,
+                limit=None,
+            ),
+            name=f"{left.name} & {right.name}",
+            requirements=_merge_requirements(
+                left._requirements, right._requirements
+            ),
+        ),
+    )
 
 
 def _metadata(
@@ -368,7 +416,7 @@ class _EnvironmentDecorator(Generic[T]):
 
 
 def environment_operation(key: EnvKey[T]) -> EnvironmentOperationDecorator[T]:
-    """Bind one capability type, then decorate a raw-value callable."""
+    """Bind one environment key, then decorate a raw-value callable."""
 
     return cast(
         EnvironmentOperationDecorator[T],
@@ -379,7 +427,7 @@ def environment_operation(key: EnvKey[T]) -> EnvironmentOperationDecorator[T]:
 def environment_result_operation(
     key: EnvKey[T],
 ) -> EnvironmentResultOperationDecorator[T]:
-    """Bind one capability type, then decorate a ``Result`` callable."""
+    """Bind one environment key, then decorate a ``Result`` callable."""
 
     return cast(
         EnvironmentResultOperationDecorator[T],

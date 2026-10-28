@@ -30,6 +30,7 @@ from fp_ops.composition import (
 )
 from fp_ops.core import (
     UNIT,
+    Fanout,
     Operation,
     Unit,
     constant,
@@ -71,7 +72,7 @@ from fp_ops.templates import (
     threaded_operation_template,
 )
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 __all__ = [
     "BuildFieldError",
@@ -81,6 +82,7 @@ __all__ = [
     "EnvironmentError",
     "EnvKey",
     "Error",
+    "Fanout",
     "MISSING",
     "Ok",
     "Operation",

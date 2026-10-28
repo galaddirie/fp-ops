@@ -20,7 +20,7 @@ A unary `Operation` returned by collection combinators. Its overloads preserve i
 
 `from fp_ops import EMPTY_ENV`
 
-A read-only mapping from typed identity keys to capabilities.
+A read-only mapping from typed identity keys to values.
 
 ## `EnvKey`
 
@@ -28,7 +28,7 @@ A read-only mapping from typed identity keys to capabilities.
 EnvKey(name: 'str', value_type: 'type[T]') -> 'None'
 ```
 
-An identity key carrying the runtime type of one environment capability.
+An identity key carrying the runtime type of one environment value.
 
 ## `Environment`
 
@@ -36,19 +36,23 @@ An identity key carrying the runtime type of one environment capability.
 Environment(values: 'Mapping[EnvKey[object], object] | None' = None) -> 'None'
 ```
 
-A read-only mapping from typed identity keys to capabilities.
+A read-only mapping from typed identity keys to values.
 
 ## `EnvironmentError`
 
 `from fp_ops import EnvironmentError`
 
-Raised when an environment cannot satisfy a capability requirement.
+Raised when an environment is missing a key or holds the wrong type.
 
 ## `Error`
 
 ```python
 Error(error: '_TError') -> 'Result[Any, _TError]'
 ```
+
+## `Fanout`
+
+A fail-fast parallel `Operation[A, tuple[...]]` built with `&`. `a & b & c` returns a flat `(a, b, c)` tuple; an operand that returns a tuple, or a parenthesized right-hand `&`, stays one branch.
 
 ## `MISSING`
 
@@ -134,7 +138,7 @@ The construction-time hole filled by an operation's unary input.
 
 ## `__version__`
 
-`0.3.1`
+`0.4.0`
 
 ## `assign`
 
@@ -206,7 +210,7 @@ Recover an error with a construction-time default value.
 environment_operation(key: 'EnvKey[T]') -> 'EnvironmentOperationDecorator[T]'
 ```
 
-Bind one capability type, then decorate a raw-value callable.
+Bind one environment key, then decorate a raw-value callable.
 
 ## `environment_operation_template`
 
@@ -214,7 +218,7 @@ Bind one capability type, then decorate a raw-value callable.
 environment_operation_template(key: 'EnvKey[T]') -> 'EnvironmentOperationTemplateDecorator[T]'
 ```
 
-Bind a capability and decorate a raw-value operation template.
+Bind one environment key and decorate a raw-value operation template.
 
 ## `environment_result_operation`
 
@@ -222,7 +226,7 @@ Bind a capability and decorate a raw-value operation template.
 environment_result_operation(key: 'EnvKey[T]') -> 'EnvironmentResultOperationDecorator[T]'
 ```
 
-Bind one capability type, then decorate a ``Result`` callable.
+Bind one environment key, then decorate a ``Result`` callable.
 
 ## `environment_result_operation_template`
 
@@ -230,7 +234,7 @@ Bind one capability type, then decorate a ``Result`` callable.
 environment_result_operation_template(key: 'EnvKey[T]') -> 'EnvironmentResultOperationTemplateDecorator[T]'
 ```
 
-Bind a capability and decorate a Result-returning operation template.
+Bind one environment key and decorate a Result-returning operation template.
 
 ## `fail`
 
