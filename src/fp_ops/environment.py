@@ -13,6 +13,19 @@ class EnvironmentError(Exception):
     """Raised when an environment is missing a key or holds the wrong type."""
 
 
+class UndeclaredRequirementError(EnvironmentError):
+    """An operation returned at run time needs a key that is missing and was
+    never declared with ``requires=`` where it was built."""
+
+    def __init__(self, key: EnvKey[object], operation: str) -> None:
+        self.key = key
+        self.operation = operation
+        super().__init__(
+            f"{operation} needs environment key {key.name!r}, which is missing "
+            "and was not declared with requires="
+        )
+
+
 class EnvKey(Generic[T]):
     """An identity key carrying the runtime type of one environment value."""
 
@@ -91,4 +104,10 @@ class Environment:
 EMPTY_ENV = Environment()
 
 
-__all__ = ["EMPTY_ENV", "EnvKey", "Environment", "EnvironmentError"]
+__all__ = [
+    "EMPTY_ENV",
+    "EnvKey",
+    "Environment",
+    "EnvironmentError",
+    "UndeclaredRequirementError",
+]

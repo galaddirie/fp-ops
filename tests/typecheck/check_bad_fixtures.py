@@ -26,6 +26,9 @@ def run_mypy() -> None:
         "Incompatible types in assignment": "[assignment]",
         "with_value": "[misc]",
         "Unsupported operand types for &": "[operator]",
+        'Argument 1 to "derive"': "[arg-type]",
+        'Argument 1 to "loop"': "[arg-type]",
+        'type parameter "T" of "provide"': "[misc]",
     }
     for message, code in expected.items():
         assert message in output and code in output, output

@@ -16,6 +16,22 @@ A schema field failed while being built.
 
 A unary `Operation` returned by collection combinators. Its overloads preserve iterable-to-list and mapping-to-dictionary shapes through execution and composition.
 
+## `Continue`
+
+```python
+Continue(state: 'S_co') -> None
+```
+
+Run another ``loop`` step with ``state``.
+
+## `Derived`
+
+```python
+Derived(operation: 'Operation[DA, DT]') -> 'None'
+```
+
+A template operand read from the pipeline input at run time.
+
 ## `EMPTY_ENV`
 
 `from fp_ops import EMPTY_ENV`
@@ -50,9 +66,23 @@ Raised when an environment is missing a key or holds the wrong type.
 Error(error: '_TError') -> 'Result[Any, _TError]'
 ```
 
+## `ErrorFilter`
+
+```python
+ErrorFilter(*args, **kwargs)
+```
+
 ## `Fanout`
 
 A fail-fast parallel `Operation[A, tuple[...]]` built with `&`. `a & b & c` returns a flat `(a, b, c)` tuple; an operand that returns a tuple, or a parenthesized right-hand `&`, stays one branch.
+
+## `LoopStepError`
+
+```python
+LoopStepError(step: 'int', state: 'T', cause: 'Exception') -> 'None'
+```
+
+A ``loop`` step failed; ``state`` is that step's input, so work can resume.
 
 ## `MISSING`
 
@@ -83,8 +113,16 @@ map(self, fn: 'Callable[[B_co], C | Awaitable[C]]') -> 'Operation[A_contra, C]'
 ```
 
 ```python
-flat_map(self, fn: 'Callable[[B_co], Operation[Unit, C] | Awaitable[Operation[Unit, C]]]') -> 'Operation[A_contra, C]'
+flat_map(self, fn: 'Callable[[B_co], Operation[Unit, C] | Awaitable[Operation[Unit, C]]]', *, requires: 'Iterable[EnvKey[Any]]' = ()) -> 'Operation[A_contra, C]'
 ```
+
+## `Partitioned`
+
+```python
+Partitioned(values: 'dict[K, T]' = <factory>, failures: 'dict[K, Exception]' = <factory>) -> None
+```
+
+Settled results split into successes and failures, keyed by input position
 
 ## `PathNotFoundError`
 
@@ -102,6 +140,14 @@ Placeholder()
 
 The construction-time hole filled by an operation's unary input.
 
+## `ReleaseError`
+
+```python
+ReleaseError(cause: 'Exception', primary: 'Exception | None' = None) -> 'None'
+```
+
+A ``bracket`` release failed.
+
 ## `Result`
 
 ```python
@@ -109,6 +155,20 @@ Result(**kwargs: Any) -> None
 ```
 
 The result class.
+
+## `Scalar`
+
+```python
+Scalar(*args, **kwargs)
+```
+
+## `Stop`
+
+```python
+Stop(state: 'S_co') -> None
+```
+
+End the ``loop`` with ``state`` as its result.
 
 ## `TraversalItemError`
 
@@ -123,6 +183,14 @@ An item failed during a fail-fast collection operation.
 `from fp_ops import UNIT`
 
 The single input value for deliberately nullary sources.
+
+## `UndeclaredRequirementError`
+
+```python
+UndeclaredRequirementError(key: 'EnvKey[object]', operation: 'str') -> 'None'
+```
+
+An operation returned at run time needs a key that is missing and was
 
 ## `Unit`
 
@@ -156,10 +224,26 @@ assign_fields(fields: 'Mapping[str, Any] | None' = None, **named_fields: 'Any') 
 
 Copy an input mapping and assign snapshotted fields shallowly.
 
+## `bracket`
+
+```python
+bracket(acquire: 'Operation[A, R]', use: 'Operation[R, B]', release: 'Operation[R, object]') -> 'Operation[A, B]'
+```
+
+Acquire a resource, use it, and always release it.
+
+## `branch`
+
+```python
+branch(condition: 'Operation[A, bool]', then: 'Operation[A, B]', otherwise: 'Operation[A, C]') -> 'Operation[A, B | C]'
+```
+
+Run ``then`` or ``otherwise`` on the original input, chosen by ``condition``.
+
 ## `build`
 
 ```python
-build(schema: 'Mapping[str, Any]', model: 'type[T] | None' = None) -> 'Operation[Any, dict[str, Any] | T]'
+build(*args: 'Any', **kwargs: 'Any') -> 'Operation[Any, Any]'
 ```
 
 Build fields in insertion order and fail with ``BuildFieldError``.
@@ -196,13 +280,29 @@ constant(value: 'T') -> 'Operation[object, T]'
 
 Return ``value`` for every input.
 
+## `continue_if`
+
+```python
+continue_if(condition: 'Operation[S, bool]', then: 'Operation[S, S]') -> 'Operation[S, Continue[S] | Stop[S]]'
+```
+
+A ``loop`` step: when ``condition`` holds, run ``then`` and continue
+
 ## `default_on_error`
 
 ```python
-default_on_error(op: 'Operation[A, B]', value: 'C') -> 'Operation[A, B | C]'
+default_on_error(op: 'Operation[A, B]', value: 'C', *, on: 'ErrorFilter' = <class 'Exception'>) -> 'Operation[A, B | C]'
 ```
 
-Recover an error with a construction-time default value.
+Recover matching errors with a construction-time default value.
+
+## `derive`
+
+```python
+derive(op: 'Operation[DA, DT]') -> 'Derived[DA, DT]'
+```
+
+Mark a template operand to be computed from the input at run time.
 
 ## `environment_operation`
 
@@ -235,6 +335,14 @@ environment_result_operation_template(key: 'EnvKey[T]') -> 'EnvironmentResultOpe
 ```
 
 Bind one environment key and decorate a Result-returning operation template.
+
+## `exponential`
+
+```python
+exponential(base: 'float', *, factor: 'float' = 2.0, cap: 'float' = 60.0, jitter: 'float' = 0.0) -> 'Callable[[int, Exception], float]'
+```
+
+A ``retry`` backoff: ``base * factor ** (attempt - 1)`` seconds, capped,
 
 ## `fail`
 
@@ -316,6 +424,14 @@ fold_operation(op: 'Operation[tuple[A, T], A]', initial: 'A') -> 'Operation[Iter
 
 Fold left with an operation consuming ``(accumulator, item)``.
 
+## `from_environment`
+
+```python
+from_environment(key: 'EnvKey[T]') -> 'Operation[object, T]'
+```
+
+Read ``key``'s value from the environment, ignoring the input.
+
 ## `get_path`
 
 ```python
@@ -331,6 +447,22 @@ identity() -> 'Operation[T, T]'
 ```
 
 Return the unary identity operation.
+
+## `jitter`
+
+```python
+jitter(low: 'float', high: 'float') -> 'Callable[[], float]'
+```
+
+A uniform random delay in ``[low, high]`` seconds, for :func:`sleep`.
+
+## `loop`
+
+```python
+loop(step: 'Operation[S, Continue[S] | Stop[S]]', *, max_steps: 'int | None' = None) -> 'Operation[S, S]'
+```
+
+Repeat ``step`` from the input state until it returns :class:`Stop`.
 
 ## `map_each`
 
@@ -383,6 +515,22 @@ or_else(first: 'Operation[A, B]', second: 'Operation[A, C]') -> 'Operation[A, B 
 
 Run ``second`` on the original input only if ``first`` fails.
 
+## `partition`
+
+```python
+partition(results: 'object') -> 'Partitioned[Any, Any]'
+```
+
+Split ``traverse_all_settled`` / ``fanout_all_settled`` output, keeping keys:
+
+## `passthrough`
+
+```python
+passthrough(effect: 'Operation[A, object]') -> 'Operation[A, A]'
+```
+
+Run ``effect`` on the input for what it does, then continue with the input.
+
 ## `pipe_all`
 
 ```python
@@ -391,10 +539,18 @@ pipe_all(operations: 'Iterable[Operation[Any, Any]]') -> 'Operation[Any, Any]'
 
 Snapshot and compose operations from left to right.
 
+## `provide`
+
+```python
+provide(key: 'EnvKey[T]', value: 'Operation[A, T]', body: 'Operation[A, B]') -> 'Operation[A, B]'
+```
+
+Compute ``value`` from the input, then run ``body`` on the same input with
+
 ## `recover`
 
 ```python
-recover(op: 'Operation[A, B]', handler: 'Callable[[Exception], C | Awaitable[C]]') -> 'Operation[A, B | C]'
+recover(op: 'Operation[A, B]', handler: 'Callable[[Any], Any]', *, on: 'ErrorFilter' = <class 'Exception'>) -> 'Operation[A, Any]'
 ```
 
 Recover an error with a raw value.
@@ -402,7 +558,7 @@ Recover an error with a raw value.
 ## `recover_with`
 
 ```python
-recover_with(op: 'Operation[A, B]', handler: 'Callable[[Exception], Operation[Unit, C] | Awaitable[Operation[Unit, C]]]') -> 'Operation[A, B | C]'
+recover_with(op: 'Operation[A, B]', handler: 'Callable[[Exception], Operation[Unit, C] | Awaitable[Operation[Unit, C]]]', *, on: 'ErrorFilter' = <class 'Exception'>, requires: 'Iterable[EnvKey[Any]]' = ()) -> 'Operation[A, B | C]'
 ```
 
 Recover an error by running a returned nullary operation.
@@ -429,10 +585,18 @@ The decorator preserves positional argument types through overloaded operation-t
 ## `retry`
 
 ```python
-retry(op: 'Operation[A, B]', *, attempts: 'int', backoff: 'Backoff' = 0.0) -> 'Operation[A, B]'
+retry(op: 'Operation[A, B]', *, attempts: 'int', backoff: 'Backoff' = 0.0, on: 'ErrorFilter' = <class 'Exception'>) -> 'Operation[A, B]'
 ```
 
 Retry failures; ``attempts`` includes the first invocation.
+
+## `sleep`
+
+```python
+sleep(seconds: 'float | Callable[[], float]') -> 'Operation[T, T]'
+```
+
+Wait, then pass the input through. A callable is sampled on each run,
 
 ## `tap`
 

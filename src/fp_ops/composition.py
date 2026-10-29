@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import copy
+import random
 from typing import (
     Any,
     Awaitable,
     Callable,
     Iterable,
     TypeVar,
+    Union,
     cast,
     overload,
 )
@@ -24,6 +26,7 @@ from fp_ops._ast import (
     TapNode,
 )
 from fp_ops.core import Operation, Unit, _merge_requirements, identity
+from fp_ops.environment import EnvKey
 
 A = TypeVar("A")
 B = TypeVar("B")
@@ -32,6 +35,7 @@ D = TypeVar("D")
 E = TypeVar("E")
 F = TypeVar("F")
 T = TypeVar("T")
+X = TypeVar("X", bound=Exception)
 
 
 @overload
@@ -81,21 +85,77 @@ def pipe_all(
     return current
 
 
+ErrorFilter = Union[
+    "type[Exception]",
+    "tuple[type[Exception], ...]",
+    Callable[[Exception], bool],
+]
+"""Which errors a policy applies to: exception types or a predicate."""
+
+
+def _error_matcher(on: ErrorFilter) -> Callable[[Exception], bool] | None:
+    if isinstance(on, type):
+        if not issubclass(on, Exception):
+            raise TypeError("on= exception types must subclass Exception")
+        if on is Exception:
+            return None
+        return lambda error: isinstance(error, on)
+    if isinstance(on, tuple):
+        types = cast("tuple[type[Exception], ...]", on)
+        if not types or not all(
+            isinstance(item, type) and issubclass(item, Exception) for item in types
+        ):
+            raise TypeError("on= must be a non-empty tuple of Exception subclasses")
+        return lambda error: isinstance(error, types)
+    if callable(on):
+        predicate = on
+
+        def matches(error: Exception) -> bool:
+            decision = predicate(error)
+            if not isinstance(decision, bool):
+                raise TypeError("on= predicate must return a bool")
+            return decision
+
+        return matches
+    raise TypeError("on= must be an exception type, a tuple of types, or a predicate")
+
+
+@overload
+def recover(
+    op: Operation[A, B],
+    handler: Callable[[X], C | Awaitable[C]],
+    *,
+    on: type[X] | tuple[type[X], ...],
+) -> Operation[A, B | C]: ...
+
+
+@overload
 def recover(
     op: Operation[A, B],
     handler: Callable[[Exception], C | Awaitable[C]],
-) -> Operation[A, B | C]:
-    """Recover an error with a raw value."""
+    *,
+    on: Callable[[Exception], bool] = ...,
+) -> Operation[A, B | C]: ...
+
+
+def recover(
+    op: Operation[A, B],
+    handler: Callable[[Any], Any],
+    *,
+    on: ErrorFilter = Exception,
+) -> Operation[A, Any]:
+    """Recover an error with a raw value.
+
+    ``on`` limits recovery to matching errors (exception types or a predicate);
+    any other error is returned unchanged.
+    """
 
     if not isinstance(op, Operation) or not callable(handler):
         raise TypeError("recover() requires an Operation and a callable")
-    return cast(
-        Operation[A, B | C],
-        Operation._from_node(
-            RecoverNode(op._node, handler, with_operation=False),
-            name=f"recover({op.name})",
-            requirements=op._requirements,
-        ),
+    return Operation._from_node(
+        RecoverNode(op._node, handler, with_operation=False, matches=_error_matcher(on)),
+        name=f"recover({op.name})",
+        requirements=op._requirements,
     )
 
 
@@ -105,29 +165,48 @@ def recover_with(
         [Exception],
         Operation[Unit, C] | Awaitable[Operation[Unit, C]],
     ],
+    *,
+    on: ErrorFilter = Exception,
+    requires: Iterable[EnvKey[Any]] = (),
 ) -> Operation[A, B | C]:
-    """Recover an error by running a returned nullary operation."""
+    """Recover an error by running a returned nullary operation.
+
+    ``requires`` declares environment keys the returned operation needs, so
+    they are checked before the run starts.
+    """
 
     if not isinstance(op, Operation) or not callable(handler):
         raise TypeError("recover_with() requires an Operation and a callable")
+    declared = _declared(requires)
     return cast(
         Operation[A, B | C],
         Operation._from_node(
-            RecoverNode(op._node, handler, with_operation=True),
+            RecoverNode(
+                op._node,
+                handler,
+                with_operation=True,
+                matches=_error_matcher(on),
+                declared=declared,
+            ),
             name=f"recover_with({op.name})",
-            requirements=op._requirements,
+            requirements=_merge_requirements(op._requirements, declared),
         ),
     )
 
 
-def default_on_error(op: Operation[A, B], value: C) -> Operation[A, B | C]:
-    """Recover an error with a construction-time default value."""
+def default_on_error(
+    op: Operation[A, B],
+    value: C,
+    *,
+    on: ErrorFilter = Exception,
+) -> Operation[A, B | C]:
+    """Recover matching errors with a construction-time default value."""
 
     try:
         snapshot = copy.deepcopy(value)
     except Exception:
         snapshot = value
-    return recover(op, lambda _error: snapshot)
+    return recover(op, lambda _error: snapshot, on=cast(Callable[[Exception], bool], on))
 
 
 def or_else(
@@ -215,8 +294,13 @@ def retry(
     *,
     attempts: int,
     backoff: Backoff = 0.0,
+    on: ErrorFilter = Exception,
 ) -> Operation[A, B]:
-    """Retry failures; ``attempts`` includes the first invocation."""
+    """Retry failures; ``attempts`` includes the first invocation.
+
+    ``on`` limits retries to matching errors; any other error is returned at
+    once, unchanged.
+    """
 
     if not isinstance(op, Operation):
         raise TypeError("retry() requires an Operation")
@@ -234,11 +318,38 @@ def retry(
     return cast(
         Operation[A, B],
         Operation._from_node(
-            RetryNode(op._node, attempts, normalized_backoff),
+            RetryNode(op._node, attempts, normalized_backoff, _error_matcher(on)),
             name=f"retry({op.name})",
             requirements=op._requirements,
         ),
     )
+
+
+def exponential(
+    base: float,
+    *,
+    factor: float = 2.0,
+    cap: float = 60.0,
+    jitter: float = 0.0,
+) -> Callable[[int, Exception], float]:
+    """A ``retry`` backoff: ``base * factor ** (attempt - 1)`` seconds, capped,
+    with up to ``jitter`` (a fraction, e.g. ``0.1``) of random spread."""
+
+    if base < 0 or factor < 1 or cap < 0 or not 0 <= jitter <= 1:
+        raise ValueError("exponential() requires base >= 0, factor >= 1, cap >= 0, 0 <= jitter <= 1")
+
+    def delay(attempt: int, _error: Exception) -> float:
+        wait = min(cap, base * factor ** (attempt - 1))
+        return wait * (1 + random.uniform(-jitter, jitter)) if jitter else wait  # noqa: S311
+
+    return delay
+
+
+def _declared(keys: Iterable[EnvKey[Any]]) -> tuple[EnvKey[object], ...]:
+    snapshot = tuple(keys)
+    if any(not isinstance(key, EnvKey) for key in snapshot):
+        raise TypeError("requires= accepts only EnvKey instances")
+    return _merge_requirements(cast(tuple[EnvKey[object], ...], snapshot))
 
 
 def _fanout(
@@ -384,8 +495,10 @@ def collect_named(
 
 __all__ = [
     "Backoff",
+    "ErrorFilter",
     "collect_named",
     "default_on_error",
+    "exponential",
     "fallback",
     "fanout_all_settled",
     "fanout_parallel",

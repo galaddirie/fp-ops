@@ -115,6 +115,24 @@ usd = format_money("$", _, precision=2)
 The template immediately creates a normal unary operation. Configuration is
 validated and captured when the operation is built—not later when it runs.
 
+When a second argument is only known while the pipeline runs, read it from the
+same input with `derive`:
+
+```python
+from fp_ops import _, derive, operation
+
+
+@operation
+def next_link(page: Page) -> str:
+    return page.next_url
+
+
+follow = navigate(_, derive(next_link))  # navigate(page, url) with url read from page
+```
+
+Derived operands run on the input just before the call, in declaration order,
+and run again on every retry.
+
 ## Handle failures
 
 Choose the behavior that matches your application:
@@ -139,7 +157,17 @@ resilient_parse = retry(parse_number, attempts=3, backoff=0.1)
 - `default_on_error` supplies a fixed fallback value.
 - `first | second` and `fallback(...)` try alternatives with the original
   input.
-- `retry` retries an operation with a fixed or calculated backoff.
+- `retry` retries an operation with a fixed or calculated backoff, such as
+  `exponential(0.5, cap=30)`.
+
+`recover`, `recover_with`, `default_on_error`, and `retry` take `on=` to apply
+only to some errors, given as exception types or a predicate. Other errors are
+returned unchanged, so a fallback for "not found" never hides a crash:
+
+```python
+optional_name = default_on_error(lookup_name, None, on=LookupError)
+fetch = retry(download, attempts=4, backoff=exponential(1.0), on=(TimeoutError,))
+```
 
 ## Work with collections
 
@@ -169,6 +197,14 @@ operations with `traverse`, `filter_operation`, and `fold_operation`.
 `traverse_parallel` adds bounded concurrency when each item performs async
 work.
 
+`partition` splits all-settled results into successes and failures, keeping
+each item's index (or mapping key):
+
+```python
+checked = traverse_all_settled(parse_number, limit=4).map(partition)
+# await checked.run(["1", "x"]) == Ok(Partitioned(values={0: 1}, failures={1: ValueError(...)}))
+```
+
 ## Build structured output
 
 Create dictionaries or typed models from the same input:
@@ -195,6 +231,13 @@ to_user = build(
 
 data = {"profile": {"name": "Ada", "age": 36}}
 # await to_user.run(data) == Ok(User(name="Ada", age=36))
+```
+
+Fields can also be keyword arguments, which type-check one by one, and may be
+plain scalar constants:
+
+```python
+to_user = build(User, name=get_path("profile.name"), age=get_path("profile.age"), source="api")
 ```
 
 `get_path` works with nested mappings, sequence indexes, and attributes.
@@ -234,7 +277,46 @@ environment = Environment().with_value(
 # == Ok("https://api.example.com/users/7")
 ```
 
-Environments are read-only and shared by every stage in a run.
+Environments are read-only. A run starts with the environment you pass, and
+`provide` binds one more value for part of a pipeline only:
+
+```python
+from fp_ops import from_environment, provide
+
+PRODUCT = EnvKey("product", Product)
+
+with_product = provide(
+    PRODUCT,
+    read_product,                                # computed from the input
+    each_review >> attach(from_environment(PRODUCT)),  # sees PRODUCT; callers don't
+)
+```
+
+The binding is lexical: it shadows outer values, is invisible to sibling
+branches, and is subtracted from the operation's static requirements, so
+preflight still checks everything else before the run starts.
+
+## Branch, loop, and manage resources
+
+```python
+from fp_ops import Continue, Stop, bracket, branch, continue_if, loop, passthrough, sleep
+
+label = branch(is_valid, describe, constant("invalid"))  # runs exactly one side
+
+# Repeat a step until it returns Stop; constant stack space, so thousands of
+# pages are fine. A failed step returns LoopStepError(step, state, cause).
+crawl = loop(
+    passthrough(save_page)                       # an effect that keeps the input
+    >> continue_if(has_next_page, open_next_page >> sleep(1.0)),
+    max_steps=500,
+)
+
+# Acquire, use, and always release, even when the run is cancelled.
+with_tab = bracket(open_tab, scrape_tab, close_tab)
+```
+
+`flat_map(fn, requires=[KEY])` declares the environment keys of an operation
+built at run time, so they are checked up front too.
 
 ## Choose an execution policy
 
@@ -258,6 +340,7 @@ completion order.
 ## Learn more
 
 - [API reference](docs/api-reference.md)
+- [0.5 migration guide](docs/migration-0.5.md)
 - [0.3 migration guide](docs/migration-0.3.md)
 - [Executable example](examples/unary_pipeline.py)
 - [Changelog](CHANGELOG.md)

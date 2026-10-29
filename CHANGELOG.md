@@ -1,5 +1,43 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `loop(step, max_steps=)` with `Continue` / `Stop`: iteration in constant stack
+  space, with step requirements checked at preflight. A failed step returns
+  `LoopStepError(step, state, cause)`, so the work can resume. `continue_if`
+  builds the common "keep going while" step.
+- `bracket(acquire, use, release)`: the release always runs, including when the
+  run is cancelled (it is shielded and awaited before the cancellation
+  propagates). A failed release returns `ReleaseError(cause, primary)`.
+- `provide(key, value, body)` and `from_environment(key)`: bind an environment
+  value for part of a pipeline. Static requirements subtract the provided key.
+- `derive(op)`: a template operand read from the pipeline input at run time,
+  e.g. `navigate(_, derive(next_url))`. Derived operands run in order, before
+  the call, and again on every retry.
+- `branch`, `passthrough` (an effect *operation* that keeps the input), `sleep`
+  and `jitter`.
+- `on=` error filters (types or a predicate) for `retry`, `recover`,
+  `recover_with`, and `default_on_error`; `recover(..., on=SomeError)` narrows
+  the handler's argument type. `exponential(...)` backoff.
+- `partition` / `Partitioned`: all-settled results split into keyed successes
+  and failures.
+- `flat_map(..., requires=)` and `recover_with(..., requires=)` declare the
+  requirements of operations built at run time. A missing undeclared key fails
+  with `UndeclaredRequirementError` (a subclass of `EnvironmentError`).
+- `build(Model, **fields)`: a keyword form whose fields type-check one by one.
+  Schemas accept `Scalar` constants (`str`, `int`, `float`, `bool`, `None`) in
+  their published types.
+
+### Changed
+
+- `x & y` accepts a left side that takes any input (such as `constant(...)`),
+  typing the fanout with the right side's input.
+- Template protocol type parameters are invariant (they now appear inside
+  `Derived[...]` operands). This only affects code that annotates
+  `OperationTemplateN` types explicitly.
+
 ## [0.4.0] - 2026-10-21
 
 ### Added

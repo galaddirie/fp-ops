@@ -7,8 +7,19 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterable, Mapping
-from typing import Any, Awaitable, Callable, Hashable, Literal, TypeVar, cast, overload
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Generic,
+    Hashable,
+    Literal,
+    TypeVar,
+    cast,
+    overload,
+)
 
 from expression import Result
 
@@ -89,6 +100,58 @@ class CollectionOperation(Operation[Iterable[T], list[U]]):
 
     def __rshift__(self, next: Operation[Any, C]) -> Operation[Any, C]:
         return self.then(next)
+
+
+@dataclass(frozen=True, slots=True)
+class Partitioned(Generic[K, T]):
+    """Settled results split into successes and failures, keyed by input position
+    (or mapping key), each in input order."""
+
+    values: dict[K, T] = field(default_factory=lambda: {})
+    failures: dict[K, Exception] = field(default_factory=lambda: {})
+
+    @property
+    def ok(self) -> list[T]:
+        """The successful values, in input order."""
+
+        return list(self.values.values())
+
+    @property
+    def errors(self) -> list[Exception]:
+        """The failures, in input order."""
+
+        return list(self.failures.values())
+
+
+@overload
+def partition(results: Mapping[K, Result[T, Exception]]) -> Partitioned[K, T]: ...
+
+
+@overload
+def partition(results: Sequence[Result[T, Exception]]) -> Partitioned[int, T]: ...
+
+
+def partition(results: object) -> Partitioned[Any, Any]:
+    """Split ``traverse_all_settled`` / ``fanout_all_settled`` output, keeping keys:
+    ``traverse_all_settled(op, limit=4).map(partition)``."""
+
+    items: Iterable[tuple[Any, Result[Any, Exception]]]
+    if isinstance(results, Mapping):
+        items = cast(Mapping[Any, Result[Any, Exception]], results).items()
+    elif isinstance(results, Sequence):
+        items = enumerate(cast(Sequence[Result[Any, Exception]], results))
+    else:
+        raise TypeError("partition() requires a sequence or mapping of Result values")
+    values: dict[Any, Any] = {}
+    failures: dict[Any, Exception] = {}
+    for key, result in items:
+        if not isinstance(result, Result):
+            raise TypeError(f"partition() item {key!r} is not a Result")
+        if result.is_ok():
+            values[key] = result.ok
+        else:
+            failures[key] = result.error
+    return Partitioned(values, failures)
 
 
 def map_each(
@@ -289,6 +352,7 @@ def fanout_each(
 
 __all__ = [
     "CollectionOperation",
+    "Partitioned",
     "fanout_each",
     "filter_best_effort",
     "filter_each",
@@ -296,6 +360,7 @@ __all__ = [
     "fold",
     "fold_operation",
     "map_each",
+    "partition",
     "traverse",
     "traverse_all_settled",
     "traverse_lossy",

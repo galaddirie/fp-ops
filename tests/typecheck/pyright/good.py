@@ -242,3 +242,102 @@ def use_configured(
 
 assert_type(use_configured(_, "value"), Operation[str, int])
 assert_type(use_configured("prefix", _, repeat=2), Operation[str, int])
+
+
+# --- 0.5: control flow, scoped environment, derive, partition, filters ---------
+
+from fp_ops import (  # noqa: E402
+    Continue,
+    Partitioned,
+    Stop,
+    bracket,
+    branch,
+    continue_if,
+    default_on_error,
+    derive,
+    exponential,
+    from_environment,
+    loop,
+    partition,
+    passthrough,
+    provide,
+    recover,
+    retry,
+    sleep,
+    traverse_all_settled,
+)
+
+
+class Cursor:
+    def __init__(self, page: int) -> None:
+        self.page = page
+
+
+def next_cursor(cursor: Cursor) -> Continue[Cursor] | Stop[Cursor]:
+    return Continue(Cursor(cursor.page + 1)) if cursor.page < 3 else Stop(cursor)
+
+
+crawl_step: Operation[Cursor, Continue[Cursor] | Stop[Cursor]] = operation(next_cursor)
+assert_type(loop(crawl_step, max_steps=10), Operation[Cursor, Cursor])
+
+def is_small(value: int) -> bool:
+    return value < 10
+
+
+def add_one(value: int) -> int:
+    return value + 1
+
+
+def forget(_resource: int) -> None:
+    return None
+
+
+below = operation(is_small)
+increment = operation(add_one)
+assert_type(loop(continue_if(below, increment)), Operation[int, int])
+assert_type(branch(below, increment, constant("big")), Operation[int, int | str])
+assert_type(passthrough(increment), Operation[int, int])
+paused: Operation[int, int] = sleep(0.5)
+
+LIMIT = EnvKey("limit", int)
+scoped_limit = provide(LIMIT, increment, from_environment(LIMIT).map(str))
+assert_type(scoped_limit, Operation[int, str])
+
+opened: Operation[str, int] = operation(len)
+closed = operation(forget)
+assert_type(bracket(opened, increment, closed), Operation[str, int])
+
+
+def handle_lookup(error: LookupError) -> str:
+    return str(error.args)
+
+
+recovered = recover(parse, handle_lookup, on=LookupError)
+assert_type(recovered, Operation[str, int | str])
+assert_type(default_on_error(parse, None, on=ValueError), Operation[str, int | None])
+assert_type(retry(parse, attempts=3, backoff=exponential(0.5), on=(TimeoutError,)), Operation[str, int])
+
+settled = traverse_all_settled(parse, limit=2)
+partitioned = settled.map(partition)
+assert_type(partitioned, Operation[Iterable[str], Partitioned[int, int]])
+
+
+@operation_template
+def visit(page: str, url: str, *, retries: int = 1) -> str:
+    return f"{page}->{url}"
+
+
+upper_url: Operation[str, str] = operation(str.upper)
+assert_type(visit(_, derive(upper_url)), Operation[str, str])
+assert_type(visit(derive(upper_url), _), Operation[str, str])
+assert_type(visit(_, derive(constant("fixed")), retries=2), Operation[str, str])
+
+
+class Pair:
+    def __init__(self, left: int, right: str) -> None:
+        self.left = left
+        self.right = right
+
+
+assert_type(build(Pair, left=parse, right="literal"), Operation[str, Pair])
+assert_type(constant(1) & parse, Fanout[str, int, int])

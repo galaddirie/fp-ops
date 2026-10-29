@@ -8,7 +8,7 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, TypeVar, cast, overload
+from typing import Any, TypeVar, Union, cast, overload
 
 from expression import Result
 
@@ -146,11 +146,32 @@ def _snapshot_fields(
     return tuple(fields), _merge_requirements(*requirement_groups)
 
 
+Scalar = Union[str, int, float, bool, None]
+"""Constants a schema may hold directly; wrap any other value in ``constant``."""
+
+
+@overload
+def build(model: type[T], /, **fields: Operation[A, object] | Scalar) -> Operation[A, T]: ...
+
+
+@overload
+def build(
+    schema: Mapping[str, Operation[A, Any]],
+) -> Operation[A, dict[str, Any]]: ...
+
+
+@overload
+def build(
+    schema: Mapping[str, Operation[A, Any]],
+    model: type[T],
+) -> Operation[A, T]: ...
+
+
 @overload
 def build(
     schema: Mapping[
         str,
-        Operation[A, Any] | Callable[[A], Any],
+        Operation[A, Any] | Callable[[A], Any] | Scalar,
     ],
 ) -> Operation[A, dict[str, Any]]: ...
 
@@ -159,28 +180,46 @@ def build(
 def build(
     schema: Mapping[
         str,
-        Operation[A, Any] | Callable[[A], Any],
+        Operation[A, Any] | Callable[[A], Any] | Scalar,
     ],
     model: type[T],
 ) -> Operation[A, T]: ...
 
 
-def build(
-    schema: Mapping[str, Any],
-    model: type[T] | None = None,
-) -> Operation[Any, dict[str, Any] | T]:
-    """Build fields in insertion order and fail with ``BuildFieldError``."""
+def build(*args: Any, **kwargs: Any) -> Operation[Any, Any]:
+    """Build fields in insertion order and fail with ``BuildFieldError``.
 
+    Two forms:
+
+    * ``build(Model, title=GetText("h1", _), source="web")``: fields as keyword
+      arguments, each typed on its own, so mixed input types resolve cleanly.
+    * ``build({"title": ..., "source": "web"}, Model)``: a mapping, for field
+      names that are not identifiers; without a model it builds a ``dict``.
+    """
+
+    if args and isinstance(args[0], type):
+        if len(args) != 1:
+            raise TypeError("build(model, **fields) takes the model as its only positional argument")
+        schema: Mapping[str, Any] = kwargs
+        model: type[Any] | None = args[0]
+    else:
+        if len(args) > 2:
+            raise TypeError("build(schema, model=None) takes at most two positional arguments")
+        if len(args) == 2 and "model" in kwargs:
+            raise TypeError("build() got multiple values for 'model'")
+        if not args and "schema" not in kwargs:
+            raise TypeError("build() requires a schema mapping or a model type")
+        schema = args[0] if args else kwargs.pop("schema")
+        model = args[1] if len(args) == 2 else kwargs.pop("model", None)
+        if kwargs:
+            raise TypeError(f"unexpected keyword arguments: {sorted(kwargs)}")
     if model is not None and not isinstance(model, type):
         raise TypeError("model must be a type")
     fields, requirements = _snapshot_fields(schema)
-    return cast(
-        Operation[Any, dict[str, Any] | T],
-        Operation._from_node(
-            BuildNode(fields, mode="fail_fast", model=model),
-            name="build",
-            requirements=requirements,
-        ),
+    return Operation._from_node(
+        BuildNode(fields, mode="fail_fast", model=model),
+        name="build",
+        requirements=requirements,
     )
 
 
@@ -286,6 +325,7 @@ def assign_fields(
 
 __all__ = [
     "MISSING",
+    "Scalar",
     "assign",
     "assign_fields",
     "build",

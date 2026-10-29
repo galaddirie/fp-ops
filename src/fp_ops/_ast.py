@@ -41,6 +41,7 @@ class SequenceNode(Node):
 class FlatMapNode(Node):
     source: Node
     callback: Callable[..., Any]
+    declared: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,8 @@ class RecoverNode(Node):
     source: Node
     handler: Callable[..., Any]
     with_operation: bool
+    matches: Callable[[Exception], bool] | None = None
+    declared: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +70,47 @@ class RetryNode(Node):
     source: Node
     attempts: int
     backoff: float | Callable[..., Any]
+    matches: Callable[[Exception], bool] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BranchNode(Node):
+    condition: Node
+    then: Node
+    otherwise: Node
+
+
+@dataclass(frozen=True, slots=True)
+class PassthroughNode(Node):
+    effect: Node
+
+
+@dataclass(frozen=True, slots=True)
+class LoopNode(Node):
+    step: Node
+    max_steps: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class BracketNode(Node):
+    acquire: Node
+    use: Node
+    release: Node
+
+
+@dataclass(frozen=True, slots=True)
+class ProvideNode(Node):
+    key: Any
+    value: Node
+    body: Node
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyNode(Node):
+    """Evaluate derived operands on the input, then call with ``(input, values)``."""
+
+    operands: tuple[Node, ...]
+    invocation: Invocation
 
 
 @dataclass(frozen=True, slots=True)

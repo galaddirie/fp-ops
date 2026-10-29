@@ -13,7 +13,10 @@ from expression import Error, Ok, Result
 
 from fp_ops._ast import (
     AlternativeNode,
+    ApplyNode,
     AssignFieldsNode,
+    BracketNode,
+    BranchNode,
     BuildNode,
     CallNode,
     ConstantNode,
@@ -26,10 +29,13 @@ from fp_ops._ast import (
     FlatMapNode,
     FoldNode,
     IdentityNode,
+    LoopNode,
     MapEachNode,
     MergeNode,
     MergeSource,
     Node,
+    PassthroughNode,
+    ProvideNode,
     RecoverNode,
     RetryNode,
     SequenceNode,
@@ -37,8 +43,13 @@ from fp_ops._ast import (
     TraverseNode,
 )
 from fp_ops._invoke import invoke
-from fp_ops.environment import EnvKey, Environment
-from fp_ops.result import BuildFieldError, TraversalItemError
+from fp_ops.environment import EnvKey, Environment, UndeclaredRequirementError
+from fp_ops.result import (
+    BuildFieldError,
+    LoopStepError,
+    ReleaseError,
+    TraversalItemError,
+)
 
 
 async def run(
@@ -100,15 +111,41 @@ async def _evaluate(node: Node, value: Any, environment: Environment) -> Any:
     if isinstance(node, FlatMapNode):
         current = await _evaluate(node.source, value, environment)
         returned = await invoke(node.callback, current)
-        return await _run_returned_operation(returned, environment)
+        return await _run_returned_operation(returned, environment, node.declared)
     if isinstance(node, RecoverNode):
         outcome = await _capture(node.source, value, environment)
         if outcome.is_ok():
             return outcome.ok
+        if node.matches is not None and not node.matches(outcome.error):
+            raise outcome.error
         recovered = await invoke(node.handler, outcome.error)
         if node.with_operation:
-            return await _run_returned_operation(recovered, environment)
+            return await _run_returned_operation(recovered, environment, node.declared)
         return recovered
+    if isinstance(node, BranchNode):
+        condition = await _evaluate(node.condition, value, environment)
+        if not isinstance(condition, bool):
+            raise TypeError(
+                f"branch condition returned {type(condition).__name__}, expected bool"
+            )
+        chosen = node.then if condition else node.otherwise
+        return await _evaluate(chosen, value, environment)
+    if isinstance(node, PassthroughNode):
+        await _evaluate(node.effect, value, environment)
+        return value
+    if isinstance(node, LoopNode):
+        return await _loop(node, value, environment)
+    if isinstance(node, BracketNode):
+        return await _bracket(node, value, environment)
+    if isinstance(node, ProvideNode):
+        provided = await _evaluate(node.value, value, environment)
+        scoped = environment.with_value(node.key, provided)
+        return await _evaluate(node.body, value, scoped)
+    if isinstance(node, ApplyNode):
+        operands: list[Any] = []
+        for operand in node.operands:
+            operands.append(await _evaluate(operand, value, environment))
+        return await node.invocation.call((value, tuple(operands)), environment)
     if isinstance(node, AlternativeNode):
         last_error: Exception | None = None
         for alternative in node.alternatives:
@@ -157,6 +194,7 @@ async def _evaluate(node: Node, value: Any, environment: Environment) -> Any:
 async def _run_returned_operation(
     returned: Any,
     environment: Environment,
+    declared: tuple[EnvKey[object], ...] = (),
 ) -> Any:
     from fp_ops.core import UNIT, Operation
 
@@ -165,8 +203,71 @@ async def _run_returned_operation(
             "operation-returning callback returned "
             f"{type(returned).__name__}, expected Operation"
         )
+    for key in returned._requirements:
+        if key not in environment and all(key is not item for item in declared):
+            raise UndeclaredRequirementError(key, returned.name)
     _preflight(environment, returned._requirements)
     return await _evaluate(returned._node, UNIT, environment)
+
+
+async def _loop(node: LoopNode, value: Any, environment: Environment) -> Any:
+    from fp_ops.control import Continue, Stop
+
+    state = value
+    step = 0
+    while node.max_steps is None or step < node.max_steps:
+        step += 1
+        outcome = await _capture(node.step, state, environment)
+        if outcome.is_error():
+            raise LoopStepError(step, state, outcome.error) from outcome.error
+        decision: Any = outcome.ok
+        if isinstance(decision, Stop):
+            return cast("Stop[Any]", decision).state
+        if not isinstance(decision, Continue):
+            raise TypeError(
+                f"loop step returned {type(decision).__name__}, expected Continue or Stop"
+            )
+        state = cast("Continue[Any]", decision).state
+        # A guaranteed scheduling point, even when every step is synchronous.
+        await asyncio.sleep(0)
+    return state
+
+
+async def _release(
+    node: BracketNode,
+    resource: Any,
+    environment: Environment,
+) -> tuple[Result[Any, Exception], bool]:
+    """Run ``release`` to completion even if this task is cancelled meanwhile."""
+
+    task = asyncio.ensure_future(_capture(node.release, resource, environment))
+    cancelled = False
+    while True:
+        try:
+            return await asyncio.shield(task), cancelled
+        except asyncio.CancelledError:
+            cancelled = True
+            if task.done():
+                return task.result(), cancelled
+
+
+async def _bracket(node: BracketNode, value: Any, environment: Environment) -> Any:
+    resource = await _evaluate(node.acquire, value, environment)
+    try:
+        outcome = await _capture(node.use, resource, environment)
+    except BaseException:
+        # Cancellation (or another BaseException) wins over a release failure.
+        await _release(node, resource, environment)
+        raise
+    released, cancelled = await _release(node, resource, environment)
+    if cancelled:
+        raise asyncio.CancelledError
+    if released.is_error():
+        primary = None if outcome.is_ok() else outcome.error
+        raise ReleaseError(released.error, primary) from released.error
+    if outcome.is_error():
+        raise outcome.error
+    return outcome.ok
 
 
 async def _retry(
@@ -180,6 +281,8 @@ async def _retry(
         if outcome.is_ok():
             return outcome.ok
         last_error = outcome.error
+        if node.matches is not None and not node.matches(last_error):
+            raise last_error
         if attempt == node.attempts:
             break
 

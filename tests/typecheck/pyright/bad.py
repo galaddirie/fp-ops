@@ -75,3 +75,36 @@ invalid_build = build(
     {"text": to_text, "number": needs_bytes},
     MixedBuild,
 )
+
+
+# --- 0.5 negative cases ---------------------------------------------------------------
+
+from fp_ops import Continue, Stop, constant, derive, from_environment, loop, provide  # noqa: E402
+
+COUNT = EnvKey("count", int)
+
+
+def as_int(value: str) -> int:
+    return int(value)
+
+
+@operation_template
+def visit(page: str, url: str) -> str:
+    return page + url
+
+
+to_int = operation(as_int)
+
+# a derived operand must produce the parameter's type
+wrong_derived_type = visit(_, derive(to_int))
+
+# a derived operand reads the same input as the hole
+wrong_derived_input = visit(_, derive(needs_bytes))
+
+# loop steps must return Continue or Stop of the loop state
+not_a_step = loop(to_int)
+
+# provide checks the bound value against the key's type
+wrong_provided = provide(COUNT, constant("text"), from_environment(COUNT))
+
+_keep: tuple[object, ...] = (Continue, Stop)

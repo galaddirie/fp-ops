@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
@@ -174,15 +174,27 @@ class Operation(Generic[A_contra, B_co]):
             [B_co],
             Operation[Unit, C] | Awaitable[Operation[Unit, C]],
         ],
+        *,
+        requires: Iterable[EnvKey[Any]] = (),
     ) -> Operation[A_contra, C]:
-        """Run the nullary operation returned by ``fn`` after success."""
+        """Run the nullary operation returned by ``fn`` after success.
 
+        The returned operation is only known at run time, so its environment
+        requirements are invisible to preflight. List them in ``requires`` to
+        have them checked before the run starts; an undeclared key that turns
+        out to be missing fails with ``UndeclaredRequirementError``.
+        """
+
+        declared = tuple(requires)
+        if any(not isinstance(key, EnvKey) for key in declared):
+            raise TypeError("requires= accepts only EnvKey instances")
+        merged = _merge_requirements(self._requirements, declared)
         return cast(
             Operation[A_contra, C],
             Operation._create(
-                FlatMapNode(self._node, fn),
+                FlatMapNode(self._node, fn, merged),
                 name=f"{self.name}.flat_map",
-                requirements=self._requirements,
+                requirements=merged,
             ),
         )
 
@@ -213,9 +225,20 @@ class Operation(Generic[A_contra, B_co]):
 
         return or_else(self, alternative)
 
+    @overload
+    def __and__(
+        self: Operation[object, B], other: Operation[A, C]
+    ) -> Fanout[A, B, C]: ...
+
+    @overload
     def __and__(
         self: Operation[A, B], other: Operation[A, C]
-    ) -> Fanout[A, B, C]:
+    ) -> Fanout[A, B, C]: ...
+
+    def __and__(self, other: Operation[Any, Any]) -> Fanout[Any, Any, Any]:
+        """Fan out over the same input. A side that accepts any input (such as
+        ``constant``) takes the other side's input type."""
+
         return _fanout_with((), self, other)
 
     @property

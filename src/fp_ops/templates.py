@@ -7,7 +7,8 @@ the runner.
 """
 
 # mypy: disable-error-code=overload-overlap
-# pyright: reportOverlappingOverload=false
+# pyright: reportOverlappingOverload=false, reportPrivateUsage=false
+# pyright: reportUnnecessaryIsInstance=false
 
 from __future__ import annotations
 
@@ -26,13 +27,17 @@ from typing import (
     Protocol,
     TypeVar,
     cast,
+    final,
     overload,
 )
 
 from expression import Result
 
+from fp_ops._ast import ApplyNode
+from fp_ops._invoke import Invocation
 from fp_ops.core import (
     Operation,
+    _merge_requirements,
     environment_operation,
     environment_result_operation,
     operation,
@@ -41,13 +46,17 @@ from fp_ops.core import (
 )
 from fp_ops.environment import EnvKey
 
-A = TypeVar("A", contravariant=True)
-B = TypeVar("B", contravariant=True)
-C = TypeVar("C", contravariant=True)
-D = TypeVar("D", contravariant=True)
-E = TypeVar("E", contravariant=True)
-F = TypeVar("F", contravariant=True)
+# Template protocol parameters are invariant: each one is the hole's input type
+# in one overload and appears inside ``Derived[...]`` operands in the others.
+A = TypeVar("A")
+B = TypeVar("B")
+C = TypeVar("C")
+D = TypeVar("D")
+E = TypeVar("E")
+F = TypeVar("F")
 R = TypeVar("R", covariant=True)
+DA = TypeVar("DA", contravariant=True)
+DT = TypeVar("DT", covariant=True)
 T = TypeVar("T")
 P = ParamSpec("P")
 
@@ -62,6 +71,37 @@ class Placeholder:
 
 
 _ = Placeholder()
+
+
+@final
+class Derived(Generic[DA, DT]):
+    """A template operand read from the pipeline input at run time.
+
+    Built with :func:`derive`. Use it for a value that is only known while the
+    pipeline runs, such as the URL a page should navigate to next.
+    """
+
+    __slots__ = ("operation",)
+
+    def __init__(self, operation: Operation[DA, DT]) -> None:
+        if not isinstance(operation, Operation):
+            raise TypeError("derive() requires an Operation")
+        self.operation = operation
+
+    def __repr__(self) -> str:
+        return f"derive({self.operation.name})"
+
+
+def derive(op: Operation[DA, DT]) -> Derived[DA, DT]:
+    """Mark a template operand to be computed from the input at run time.
+
+    ``op`` runs on the same input as the template's ``_`` hole, just before the
+    call; derived operands run in declaration order and their errors propagate
+    unchanged. ``Navigate(_, derive(next_url))`` navigates a page to a URL read
+    from that page. Each run (and each retry) evaluates the operand again.
+    """
+
+    return Derived(op)
 
 
 def _snapshot(value: object) -> object:
@@ -164,6 +204,13 @@ class _OperationTemplate(Generic[R]):
         captured = OrderedDict(
             (name, _snapshot(value)) for name, value in bound.arguments.items()
         )
+        derived: tuple[tuple[str, Derived[Any, Any]], ...] = tuple(
+            (name, cast("Derived[Any, Any]", value))
+            for name, value in captured.items()
+            if isinstance(value, Derived)
+        )
+        if derived:
+            return self._apply(hole_name, captured, derived)
 
         if self._environment_key is None:
 
@@ -225,22 +272,84 @@ class _OperationTemplate(Generic[R]):
         )
 
 
-class OperationTemplate1(Protocol[A, P, R]):
+    def _apply(
+        self,
+        hole_name: str,
+        captured: OrderedDict[str, object],
+        derived: tuple[tuple[str, Derived[Any, Any]], ...],
+    ) -> Operation[Any, R]:
+        """Build an operation whose derived operands are read from the input."""
+
+        environment_parameter = self._environment_parameter
+        derived_names = tuple(name for name, _value in derived)
+
+        def arguments_for(packed: object) -> OrderedDict[str, object]:
+            value, operands = cast(tuple[object, tuple[object, ...]], packed)
+            arguments = OrderedDict(captured)
+            arguments[hole_name] = value
+            for name, operand in zip(derived_names, operands):
+                arguments[name] = operand
+            return arguments
+
+        def configured(packed: object) -> object:
+            resolved = inspect.BoundArguments(
+                self._source_signature, arguments_for(packed)
+            )
+            return self._fn(*resolved.args, **resolved.kwargs)
+
+        def configured_with_environment(packed: object, dependency: object) -> object:
+            assert environment_parameter is not None
+            arguments = arguments_for(packed)
+            arguments[environment_parameter.name] = dependency
+            resolved = inspect.BoundArguments(self._source_signature, arguments)
+            return self._fn(*resolved.args, **resolved.kwargs)
+
+        key = self._environment_key
+        call: Callable[..., object]
+        if key is None:
+            call = functools.update_wrapper(configured, self._fn)
+        else:
+            call = functools.update_wrapper(configured_with_environment, self._fn)
+        invocation = Invocation(
+            cast(Callable[..., Any], call),
+            output="result" if self._result else "raw",
+            environment_key=cast(Any, key),
+            threaded=self._threaded,
+        )
+        operations = tuple(value.operation for _name, value in derived)
+        name = getattr(self._fn, "__name__", type(self._fn).__name__)
+        return cast(
+            Operation[Any, R],
+            Operation._from_node(
+                ApplyNode(tuple(op._node for op in operations), invocation),
+                name=name,
+                description=inspect.getdoc(self._fn),
+                source_signature=self._source_signature,
+                requirements=_merge_requirements(
+                    *(op._requirements for op in operations),
+                    () if key is None else (key,),
+                ),
+            ),
+        )
+
+
+class OperationTemplate1(Protocol[DA, P, R]):
     def __call__(
         self,
         first: Placeholder,
         /,
         *args: P.args,
         **kwargs: P.kwargs,
-    ) -> Operation[A, R]: ...
+    ) -> Operation[DA, R]: ...
 
 
 class OperationTemplate2(Protocol[A, B, P, R]):
+
     @overload
     def __call__(
         self,
         first: Placeholder,
-        second: B,
+        second: B | Derived[A, B],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -249,7 +358,7 @@ class OperationTemplate2(Protocol[A, B, P, R]):
     @overload
     def __call__(
         self,
-        first: A,
+        first: A | Derived[B, A],
         second: Placeholder,
         /,
         *args: P.args,
@@ -258,12 +367,13 @@ class OperationTemplate2(Protocol[A, B, P, R]):
 
 
 class OperationTemplate3(Protocol[A, B, C, P, R]):
+
     @overload
     def __call__(
         self,
         first: Placeholder,
-        second: B,
-        third: C,
+        second: B | Derived[A, B],
+        third: C | Derived[A, C],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -272,9 +382,9 @@ class OperationTemplate3(Protocol[A, B, C, P, R]):
     @overload
     def __call__(
         self,
-        first: A,
+        first: A | Derived[B, A],
         second: Placeholder,
-        third: C,
+        third: C | Derived[B, C],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -283,8 +393,8 @@ class OperationTemplate3(Protocol[A, B, C, P, R]):
     @overload
     def __call__(
         self,
-        first: A,
-        second: B,
+        first: A | Derived[C, A],
+        second: B | Derived[C, B],
         third: Placeholder,
         /,
         *args: P.args,
@@ -293,13 +403,14 @@ class OperationTemplate3(Protocol[A, B, C, P, R]):
 
 
 class OperationTemplate4(Protocol[A, B, C, D, P, R]):
+
     @overload
     def __call__(
         self,
         first: Placeholder,
-        second: B,
-        third: C,
-        fourth: D,
+        second: B | Derived[A, B],
+        third: C | Derived[A, C],
+        fourth: D | Derived[A, D],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -308,10 +419,10 @@ class OperationTemplate4(Protocol[A, B, C, D, P, R]):
     @overload
     def __call__(
         self,
-        first: A,
+        first: A | Derived[B, A],
         second: Placeholder,
-        third: C,
-        fourth: D,
+        third: C | Derived[B, C],
+        fourth: D | Derived[B, D],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -320,10 +431,10 @@ class OperationTemplate4(Protocol[A, B, C, D, P, R]):
     @overload
     def __call__(
         self,
-        first: A,
-        second: B,
+        first: A | Derived[C, A],
+        second: B | Derived[C, B],
         third: Placeholder,
-        fourth: D,
+        fourth: D | Derived[C, D],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -332,9 +443,9 @@ class OperationTemplate4(Protocol[A, B, C, D, P, R]):
     @overload
     def __call__(
         self,
-        first: A,
-        second: B,
-        third: C,
+        first: A | Derived[D, A],
+        second: B | Derived[D, B],
+        third: C | Derived[D, C],
         fourth: Placeholder,
         /,
         *args: P.args,
@@ -343,14 +454,15 @@ class OperationTemplate4(Protocol[A, B, C, D, P, R]):
 
 
 class OperationTemplate5(Protocol[A, B, C, D, E, P, R]):
+
     @overload
     def __call__(
         self,
         first: Placeholder,
-        second: B,
-        third: C,
-        fourth: D,
-        fifth: E,
+        second: B | Derived[A, B],
+        third: C | Derived[A, C],
+        fourth: D | Derived[A, D],
+        fifth: E | Derived[A, E],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -359,11 +471,11 @@ class OperationTemplate5(Protocol[A, B, C, D, E, P, R]):
     @overload
     def __call__(
         self,
-        first: A,
+        first: A | Derived[B, A],
         second: Placeholder,
-        third: C,
-        fourth: D,
-        fifth: E,
+        third: C | Derived[B, C],
+        fourth: D | Derived[B, D],
+        fifth: E | Derived[B, E],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -372,11 +484,11 @@ class OperationTemplate5(Protocol[A, B, C, D, E, P, R]):
     @overload
     def __call__(
         self,
-        first: A,
-        second: B,
+        first: A | Derived[C, A],
+        second: B | Derived[C, B],
         third: Placeholder,
-        fourth: D,
-        fifth: E,
+        fourth: D | Derived[C, D],
+        fifth: E | Derived[C, E],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -385,11 +497,11 @@ class OperationTemplate5(Protocol[A, B, C, D, E, P, R]):
     @overload
     def __call__(
         self,
-        first: A,
-        second: B,
-        third: C,
+        first: A | Derived[D, A],
+        second: B | Derived[D, B],
+        third: C | Derived[D, C],
         fourth: Placeholder,
-        fifth: E,
+        fifth: E | Derived[D, E],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -398,10 +510,10 @@ class OperationTemplate5(Protocol[A, B, C, D, E, P, R]):
     @overload
     def __call__(
         self,
-        first: A,
-        second: B,
-        third: C,
-        fourth: D,
+        first: A | Derived[E, A],
+        second: B | Derived[E, B],
+        third: C | Derived[E, C],
+        fourth: D | Derived[E, D],
         fifth: Placeholder,
         /,
         *args: P.args,
@@ -412,15 +524,16 @@ class OperationTemplate5(Protocol[A, B, C, D, E, P, R]):
 class OperationTemplate6(
     Protocol[A, B, C, D, E, F, P, R],
 ):
+
     @overload
     def __call__(
         self,
         first: Placeholder,
-        second: B,
-        third: C,
-        fourth: D,
-        fifth: E,
-        sixth: F,
+        second: B | Derived[A, B],
+        third: C | Derived[A, C],
+        fourth: D | Derived[A, D],
+        fifth: E | Derived[A, E],
+        sixth: F | Derived[A, F],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -429,12 +542,12 @@ class OperationTemplate6(
     @overload
     def __call__(
         self,
-        first: A,
+        first: A | Derived[B, A],
         second: Placeholder,
-        third: C,
-        fourth: D,
-        fifth: E,
-        sixth: F,
+        third: C | Derived[B, C],
+        fourth: D | Derived[B, D],
+        fifth: E | Derived[B, E],
+        sixth: F | Derived[B, F],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -443,12 +556,12 @@ class OperationTemplate6(
     @overload
     def __call__(
         self,
-        first: A,
-        second: B,
+        first: A | Derived[C, A],
+        second: B | Derived[C, B],
         third: Placeholder,
-        fourth: D,
-        fifth: E,
-        sixth: F,
+        fourth: D | Derived[C, D],
+        fifth: E | Derived[C, E],
+        sixth: F | Derived[C, F],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -457,12 +570,12 @@ class OperationTemplate6(
     @overload
     def __call__(
         self,
-        first: A,
-        second: B,
-        third: C,
+        first: A | Derived[D, A],
+        second: B | Derived[D, B],
+        third: C | Derived[D, C],
         fourth: Placeholder,
-        fifth: E,
-        sixth: F,
+        fifth: E | Derived[D, E],
+        sixth: F | Derived[D, F],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -471,12 +584,12 @@ class OperationTemplate6(
     @overload
     def __call__(
         self,
-        first: A,
-        second: B,
-        third: C,
-        fourth: D,
+        first: A | Derived[E, A],
+        second: B | Derived[E, B],
+        third: C | Derived[E, C],
+        fourth: D | Derived[E, D],
         fifth: Placeholder,
-        sixth: F,
+        sixth: F | Derived[E, F],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -485,11 +598,11 @@ class OperationTemplate6(
     @overload
     def __call__(
         self,
-        first: A,
-        second: B,
-        third: C,
-        fourth: D,
-        fifth: E,
+        first: A | Derived[F, A],
+        second: B | Derived[F, B],
+        third: C | Derived[F, C],
+        fourth: D | Derived[F, D],
+        fifth: E | Derived[F, E],
         sixth: Placeholder,
         /,
         *args: P.args,
@@ -887,6 +1000,7 @@ def environment_result_operation_template(
 
 
 __all__ = [
+    "Derived",
     "EnvironmentOperationTemplateDecorator",
     "EnvironmentResultOperationTemplateDecorator",
     "OperationTemplate1",
@@ -897,6 +1011,7 @@ __all__ = [
     "OperationTemplate6",
     "Placeholder",
     "_",
+    "derive",
     "environment_operation_template",
     "environment_result_operation_template",
     "operation_template",
