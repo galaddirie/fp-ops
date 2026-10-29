@@ -206,7 +206,7 @@ The construction-time hole filled by an operation's unary input.
 
 ## `__version__`
 
-`0.4.0`
+`0.5.0`
 
 ## `assign`
 
